@@ -1,0 +1,384 @@
+/* SetupWizard - Estilos */
+.wizard-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0a0a0a;
+  padding: 2rem;
+}
+
+.wizard-box {
+  background: #111827;
+  border-radius: 16px;
+  border: 1px solid #1f2937;
+  padding: 2.5rem;
+  max-width: 600px;
+  width: 100%;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+/* Welcome Box */
+.welcome-box {
+  text-align: center;
+}
+
+.wizard-icon {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+.wizard-box h1 {
+  color: #e5e7eb;
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.wizard-box p {
+  color: #9ca3af;
+  font-size: 1rem;
+  line-height: 1.6;
+  margin-bottom: 1.5rem;
+}
+
+/* Existing Config Notice */
+.existing-config-notice {
+  background: #1a2332;
+  border-radius: 8px;
+  padding: 1.5rem;
+  border: 1px solid #1f2937;
+  margin-top: 1rem;
+}
+
+.existing-config-notice p {
+  margin-bottom: 1rem;
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.btn-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+/* Buttons */
+.btn-primary {
+  background: #3b82f6;
+  color: white;
+  border: none;
+  padding: 0.75rem 2rem;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-primary:hover {
+  background: #2563eb;
+  transform: translateY(-1px);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-secondary {
+  background: #1f2937;
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  padding: 0.75rem 2rem;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-secondary:hover {
+  background: #374151;
+}
+
+.btn-large {
+  padding: 1rem 3rem;
+  font-size: 1.125rem;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  color: #6b7280;
+  cursor: pointer;
+  font-size: 0.875rem;
+  text-decoration: underline;
+  padding: 0.5rem;
+}
+
+.btn-link:hover {
+  color: #ef4444;
+}
+
+/* Form Box */
+.wizard-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.wizard-icon-small {
+  font-size: 2.5rem;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+.wizard-header h1 {
+  font-size: 1.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.wizard-header p {
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+/* Form */
+.wizard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: #e5e7eb;
+}
+
+.form-group input,
+.form-group textarea {
+  width: 100%;
+  padding: 0.625rem 0.75rem;
+  background: #0a0a0a;
+  border: 1px solid #1f2937;
+  border-radius: 6px;
+  color: #e5e7eb;
+  font-size: 0.875rem;
+  font-family: inherit;
+  transition: border-color 0.2s;
+}
+
+.form-group input:focus,
+.form-group textarea:focus {
+  outline: none;
+  border-color: #3b82f6;
+}
+
+.form-group input.error {
+  border-color: #ef4444;
+}
+
+.form-group textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.form-note {
+  font-size: 0.75rem;
+  color: #6b7280;
+}
+
+.form-error {
+  font-size: 0.75rem;
+  color: #ef4444;
+}
+
+.form-info-box {
+  background: #1a2332;
+  border-radius: 6px;
+  padding: 0.75rem;
+  display: flex;
+  gap: 0.75rem;
+  border: 1px solid #1f2937;
+  margin-top: 0.25rem;
+}
+
+.info-icon {
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+
+.form-info-box p {
+  font-size: 0.8125rem;
+  color: #9ca3af;
+  margin: 0;
+}
+
+.form-info-box a {
+  color: #3b82f6;
+  text-decoration: none;
+}
+
+.form-info-box a:hover {
+  text-decoration: underline;
+}
+
+.info-small {
+  font-size: 0.7rem !important;
+  color: #6b7280 !important;
+  margin-top: 0.25rem !important;
+}
+
+.form-sub-label {
+  font-size: 0.8125rem;
+  color: #6b7280;
+  margin: 0;
+}
+
+/* Channels Grid */
+.channels-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+}
+
+.channel-card {
+  background: #0a0a0a;
+  border: 2px solid #1f2937;
+  border-radius: 8px;
+  padding: 1rem 0.75rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  user-select: none;
+}
+
+.channel-card:hover {
+  border-color: #374151;
+}
+
+.channel-card.active {
+  border-color: #3b82f6;
+  background: rgba(59, 130, 246, 0.1);
+}
+
+.channel-emoji {
+  font-size: 1.5rem;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.channel-name {
+  font-size: 0.75rem;
+  color: #9ca3af;
+}
+
+.channel-card.active .channel-name {
+  color: #e5e7eb;
+}
+
+/* Form Actions */
+.form-actions {
+  margin-top: 0.5rem;
+}
+
+.btn-submit {
+  width: 100%;
+  padding: 0.875rem;
+  font-size: 1rem;
+}
+
+.form-footer {
+  text-align: center;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #1f2937;
+}
+
+/* Loading Box */
+.loading-box {
+  text-align: center;
+}
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 3px solid #1f2937;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin: 0 auto 1.5rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.loading-box h2 {
+  font-size: 1.25rem;
+  color: #e5e7eb;
+  margin-bottom: 0.5rem;
+}
+
+.loading-box p {
+  color: #9ca3af;
+  margin-bottom: 1.5rem;
+}
+
+.loading-progress {
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.progress-bar {
+  height: 4px;
+  background: #1f2937;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #3b82f6;
+  border-radius: 2px;
+  transition: width 0.3s;
+}
+
+/* Estilos específicos para los nuevos campos de autenticación */
+.form-group input[type="password"] + input[type="text"] {
+  margin-top: 0.5rem;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .wizard-box {
+    padding: 1.5rem;
+  }
+  
+  .channels-grid {
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+  }
+  
+  .wizard-icon {
+    font-size: 3rem;
+  }
+  
+  .wizard-box h1 {
+    font-size: 1.25rem;
+  }
+}
