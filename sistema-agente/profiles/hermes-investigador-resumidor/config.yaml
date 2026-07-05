@@ -1,0 +1,9 @@
+model: anthropic/claude-3.5-sonnet
+temperature: 0.4
+skills:
+  - file
+  - terminal
+terminal:
+  cwd: /app/vault
+outputs:
+  path: /app/vault/outputs

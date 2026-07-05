@@ -1,5 +1,6 @@
 @echo off
 title Cerebro Virtual - Inicio
+chcp 65001 >nul 2>&1
 
 echo =========================================
 echo  CEREBRO VIRTUAL - INICIO
@@ -104,10 +105,23 @@ if not exist .env (
 )
 
 if not exist vault (
-    echo Creando carpeta vault...
+    echo Creando estructura de vault...
     mkdir vault
 )
 
+REM Asegurar estructura del vault
+if not exist vault\raw mkdir vault\raw
+if not exist vault\raw\.processed mkdir vault\raw\.processed
+if not exist vault\wiki mkdir vault\wiki
+if not exist vault\outputs mkdir vault\outputs
+if not exist vault\system mkdir vault\system
+
+echo.
+echo Estructura del vault:
+echo   vault\raw\       - Materia prima inmutable
+echo   vault\wiki\      - Conocimiento procesado
+echo   vault\outputs\   - Informes generados
+echo   vault\system\    - Configuracion del sistema
 echo.
 
 REM -----------------------------------------------------------------
@@ -137,13 +151,25 @@ echo Frontend:    http://localhost:5173
 echo Backend API: http://localhost:8000
 echo Vault:       %CD%\vault
 echo.
+echo Estructura del Vault:
+echo   raw\       - Archivos originales (inmutable)
+echo   wiki\      - Conocimiento procesado (Markdown)
+echo   outputs\   - Informes y resumenes generados
+echo.
+echo Subagentes disponibles:
+echo   - Coordinador (interfaz con el usuario)
+echo   - Editor (corrige y amplía wiki)
+echo   - Investigador-Resumidor (resumenes y mapas)
+echo   - Indexador (indice global)
+echo   - Sintetizador (procesa raw/ a wiki/)
+echo.
 echo Comandos utiles:
-echo   Ver logs:      docker-compose logs -f
-echo   Parar sistema: docker-compose down
-echo   Reiniciar:     docker-compose restart
+echo   Ver logs:      %COMPOSE_CMD% logs -f
+echo   Parar sistema: %COMPOSE_CMD% down
+echo   Reiniciar:     %COMPOSE_CMD% restart
 echo.
-echo La API key de OpenRouter se configura en:
-echo   Ajustes > Apis Agentes (dentro de la web)
+echo Si seleccionaste modelos locales (Ollama), el agente
+echo arrancara el contenedor de Ollama automaticamente.
 echo.
-
-pause
+echo Presione una tecla para continuar . . .
+pause >nul

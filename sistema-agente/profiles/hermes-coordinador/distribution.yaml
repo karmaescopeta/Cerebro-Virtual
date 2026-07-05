@@ -1,0 +1,8 @@
+name: coordinador
+version: 0.1.0
+description: "Agente principal que habla con el usuario y orquesta los subagentes del cerebro virtual (Editor, Investigador, Indexador, Sintetizador)."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - VAULT_ROOT
+  - OPENROUTER_API_KEY

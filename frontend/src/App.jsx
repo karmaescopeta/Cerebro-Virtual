@@ -147,19 +147,46 @@ function App() {
     setChatResponse('')
 
     try {
-      const res = await fetch('/api/chat', {
+      // El chat ahora habla directamente con el Coordinador (Hermes en :8080)
+      // El Coordinador es el único agente accesible desde el frontend.
+      // Los demás subagentes son internos y solo se invocan por delegación.
+      const res = await fetch('http://localhost:8080/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ message: chatMessage })
       })
-      const data = await res.json()
-      setChatResponse(data.response)
+      if (!res.ok) {
+        // Fallback al backend si Hermes no responde
+        console.warn('Hermes no responde en :8080, fallback al backend')
+        const fallbackRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: chatMessage })
+        })
+        const fallbackData = await fallbackRes.json()
+        setChatResponse(fallbackData.response)
+      } else {
+        const data = await res.json()
+        setChatResponse(data.response || data.message || 'Sin respuesta')
+      }
       setChatMessage('')
     } catch (error) {
       console.error('Error en chat:', error)
-      setChatResponse('❌ Error al conectar con Hermes')
+      // Fallback al backend si hay error de conexión con Hermes
+      try {
+        const fallbackRes = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: chatMessage })
+        })
+        const fallbackData = await fallbackRes.json()
+        setChatResponse(fallbackData.response)
+        setChatMessage('')
+      } catch (fallbackError) {
+        setChatResponse('❌ Error al conectar con ' + (editAgentName || 'Hermes'))
+      }
     } finally {
       setChatLoading(false)
     }
@@ -390,16 +417,16 @@ function App() {
               
               <div className="stats-grid">
                 <div className="stat-card">
-                  <h3>📝 Notas</h3>
-                  <p className="stat-number">{vaultInfo?.stats?.notes || 0}</p>
+                  <h3>📖 Wiki</h3>
+                  <p className="stat-number">{vaultInfo?.stats?.wiki_pages || 0}</p>
                 </div>
                 <div className="stat-card">
-                  <h3>📁 Proyectos</h3>
-                  <p className="stat-number">{vaultInfo?.stats?.projects || 0}</p>
+                  <h3>📦 Raw</h3>
+                  <p className="stat-number">{vaultInfo?.stats?.raw_files || 0}</p>
                 </div>
                 <div className="stat-card">
-                  <h3>📎 Archivos</h3>
-                  <p className="stat-number">{vaultInfo?.stats?.assets || 0}</p>
+                  <h3>📤 Outputs</h3>
+                  <p className="stat-number">{vaultInfo?.stats?.outputs || 0}</p>
                 </div>
               </div>
 

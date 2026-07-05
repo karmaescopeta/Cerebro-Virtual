@@ -1,0 +1,9 @@
+name: indexador
+version: 0.1.0
+description: "Organizador metódico que mantiene un índice global de wiki/ y responde consultas sobre fechas, etiquetas, relaciones y autores."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - VAULT_ROOT
+  - WIKI_PATH
+  - INDEX_PATH
