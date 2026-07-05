@@ -1,0 +1,8 @@
+name: editor
+version: 0.1.0
+description: "Editor meticuloso que corrige y amplía páginas en wiki/, manteniendo coherencia y exactitud de la información."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - VAULT_ROOT
+  - WIKI_PATH

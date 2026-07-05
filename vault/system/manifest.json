@@ -1,6 +1,7 @@
 {
-  "schemaVersion": "1.0.0",
+  "schemaVersion": "2.0.0",
   "name": "Mi Cerebro Virtual",
   "createdAt": "2025-07-01T00:00:00Z",
-  "updatedAt": "2025-07-01T00:00:00Z"
+  "updatedAt": "2026-07-03T00:00:00Z",
+  "structure": ["raw", "wiki", "outputs"]
 }

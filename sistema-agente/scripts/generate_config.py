@@ -41,6 +41,8 @@ def main():
     agent_name = config.get("agentName", "Hermes")
     personality = config.get("personality", "Eres un asistente útil y amigable.")
     api_key = config.get("apiKey", "")
+    model_mode = config.get("modelMode", "openrouter")
+    hw_profile = config.get("hwProfile", "medium")
     channels = config.get("channels", {}) or {}
     dashboard = config.get("dashboard", {}) or {}
     dashboard_user = (dashboard.get("user") or "").strip()
@@ -81,22 +83,37 @@ def main():
             "users": {dashboard_user: password_hash},
         }
 
+    # Build LLM config based on model mode
+    if model_mode == "local":
+        llm_config = {
+            "provider": "ollama",
+            "base_url": "http://cerebro-ollama:11434",
+        }
+        legacy_llm_config = {
+            "provider": "ollama",
+            "base_url": "http://cerebro-ollama:11434",
+            "model": "qwen2.5:3b",
+        }
+    else:
+        llm_config = {
+            "provider": "openrouter",
+            "default": "openai/gpt-4o-mini",
+            "api_key": api_key,
+        }
+        legacy_llm_config = {
+            "provider": "openrouter",
+            "api_key": api_key,
+            "model": "openai/gpt-4o-mini",
+        }
+
     hermes_config = {
         "agent": {
             "name": agent_name,
             "personality": personality,
         },
-        "model": {
-            "provider": "openrouter",
-            "default": "openai/gpt-4o-mini",
-            "api_key": api_key,
-        },
+        "model": llm_config,
         # Legacy shape kept for older code paths in this project.
-        "llm": {
-            "provider": "openrouter",
-            "api_key": api_key,
-            "model": "openai/gpt-4o-mini",
-        },
+        "llm": legacy_llm_config,
         "channels": {
             "web": {"enabled": True, "port": 8080},
             "telegram": {

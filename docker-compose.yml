@@ -13,7 +13,8 @@ services:
     volumes:
       - ./vault:/app/vault
       - ./sistema-agente:/app/sistema-agente:ro
-      - /var/run/docker.sock:/var/run/docker.sock   # Solo el socket es suficiente
+      - ./herramientas:/app/herramientas:ro
+      - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - cerebro-network
 
@@ -52,6 +53,36 @@ services:
     profiles:
       - agent
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cerebro-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+      - ./sistema-agente/scripts:/app/scripts:ro
+    networks:
+      - cerebro-network
+    profiles:
+      - local
+
+  herramientas:
+    build:
+      context: ./herramientas
+      dockerfile: Dockerfile
+    container_name: cerebro-herramientas
+    restart: "no"
+    volumes:
+      - ./vault:/app/vault
+    networks:
+      - cerebro-network
+    profiles:
+      - tools
+
 networks:
   cerebro-network:
     driver: bridge
+
+volumes:
+  ollama-models:

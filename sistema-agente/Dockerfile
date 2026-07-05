@@ -28,6 +28,9 @@ RUN mkdir -p /app/config /app/vault /app/data
 COPY scripts/ /app/scripts/
 RUN chmod +x /app/scripts/entrypoint.sh
 
+# Copiar perfiles de subagentes
+COPY profiles/ /app/sistema-agente/profiles/
+
 # Puerto para la interfaz web
 EXPOSE 8080
 

@@ -96,6 +96,15 @@ $PYTHON_CMD /app/scripts/generate_config.py "$CONFIG_YAML"
 echo "Aplicando parche de autenticación del dashboard de Hermes..."
 $PYTHON_CMD /app/scripts/patch_hermes_dashboard_auth.py || true
 
+# Instalar perfiles de subagentes
+MODEL_MODE=$($PYTHON_CMD -c "import json; c=json.load(open('$CONFIG_JSON')); print(c.get('modelMode', 'openrouter'))" 2>/dev/null || echo "openrouter")
+HW_PROFILE=$($PYTHON_CMD -c "import json; c=json.load(open('$CONFIG_JSON')); print(c.get('hwProfile', 'medium'))" 2>/dev/null || echo "medium")
+
+echo "Modo de modelo: $MODEL_MODE | Perfil de hardware: $HW_PROFILE"
+
+echo "Instalando perfiles de subagentes..."
+bash /app/scripts/install_profiles.sh "$MODEL_MODE" "$HW_PROFILE" || echo "⚠️ Error instalando perfiles, continuando..."
+
 # Verificar que se generó el archivo
 if [ ! -f "$CONFIG_YAML" ]; then
     echo "⚠️ No se generó $CONFIG_YAML, creando manualmente..."

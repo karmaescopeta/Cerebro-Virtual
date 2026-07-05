@@ -71,38 +71,73 @@ def save_agent_config(data):
         json.dump(data, f, indent=2)
 
 def search_vault(query: str, limit: int = 5):
-    notes_path = Path(VAULT_PATH) / "notes"
+    """Search wiki/ first, then raw/ as fallback."""
     results = []
-    if not notes_path.exists():
-        return results
-    for md_file in notes_path.glob("**/*.md"):
-        try:
-            with open(md_file, "r", encoding="utf-8") as f:
-                content = f.read()
-            if query.lower() in content.lower():
-                title = md_file.stem.replace("-", " ").title()
-                for line in content.split("\n"):
-                    if line.startswith("# "):
-                        title = line[2:].strip()
+    # Search wiki/ first (processed, structured knowledge)
+    wiki_path = Path(VAULT_PATH) / "wiki"
+    if wiki_path.exists():
+        for md_file in wiki_path.glob("**/*.md"):
+            try:
+                with open(md_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if query.lower() in content.lower():
+                    title = md_file.stem.replace("-", " ").title()
+                    for line in content.split("\n"):
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+                    lines = content.split("\n")
+                    context = ""
+                    for i, line in enumerate(lines):
+                        if query.lower() in line.lower():
+                            start = max(0, i-2)
+                            end = min(len(lines), i+3)
+                            context = "\n".join(lines[start:end])
+                            break
+                    results.append({
+                        "title": title,
+                        "path": str(md_file.relative_to(VAULT_PATH)),
+                        "content": context[:500],
+                        "source": "wiki"
+                    })
+                    if len(results) >= limit:
+                        return results
+            except Exception as e:
+                print(f"Error leyendo {md_file}: {e}")
+                continue
+
+    # Fallback: search raw/ (original files, only .txt and .md)
+    raw_path = Path(VAULT_PATH) / "raw"
+    if raw_path.exists() and len(results) < limit:
+        for md_file in raw_path.glob("**/*.md"):
+            try:
+                with open(md_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if query.lower() in content.lower():
+                    title = md_file.stem.replace("-", " ").title()
+                    for line in content.split("\n"):
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+                    lines = content.split("\n")
+                    context = ""
+                    for i, line in enumerate(lines):
+                        if query.lower() in line.lower():
+                            start = max(0, i-2)
+                            end = min(len(lines), i+3)
+                            context = "\n".join(lines[start:end])
+                            break
+                    results.append({
+                        "title": title,
+                        "path": str(md_file.relative_to(VAULT_PATH)),
+                        "content": context[:500],
+                        "source": "raw"
+                    })
+                    if len(results) >= limit:
                         break
-                lines = content.split("\n")
-                context = ""
-                for i, line in enumerate(lines):
-                    if query.lower() in line.lower():
-                        start = max(0, i-2)
-                        end = min(len(lines), i+3)
-                        context = "\n".join(lines[start:end])
-                        break
-                results.append({
-                    "title": title,
-                    "path": str(md_file.relative_to(notes_path)),
-                    "content": context[:500]
-                })
-                if len(results) >= limit:
-                    break
-        except Exception as e:
-            print(f"Error leyendo {md_file}: {e}")
-            continue
+            except Exception as e:
+                print(f"Error leyendo {md_file}: {e}")
+                continue
     return results
 
 
@@ -340,34 +375,30 @@ async def vault_status():
     if identity_path.exists():
         with open(identity_path, "r") as f:
             identity = json.load(f)
-    notes_count = len(list(Path(VAULT_PATH).glob("notes/**/*.md")))
-    projects_count = len(list(Path(VAULT_PATH).glob("projects/**/*.md")))
-    assets = {
-        "pdf": len(list(Path(VAULT_PATH).glob("assets/pdf/*"))),
-        "images": len(list(Path(VAULT_PATH).glob("assets/images/*"))),
-        "audio": len(list(Path(VAULT_PATH).glob("assets/audio/*"))),
-        "video": len(list(Path(VAULT_PATH).glob("assets/video/*"))),
-        "other": len(list(Path(VAULT_PATH).glob("assets/other/*")))
-    }
-    total_assets = sum(assets.values())
+    # New vault structure: raw/, wiki/, outputs/
+    wiki_count = len(list(Path(VAULT_PATH).glob("wiki/**/*.md")))
+    raw_files = len(list(Path(VAULT_PATH).glob("raw/**/*"))) - len(list(Path(VAULT_PATH).glob("raw/.processed/**/*")))
+    outputs_count = len(list(Path(VAULT_PATH).glob("outputs/**/*")))
     return {
         "manifest": manifest,
         "identity": identity,
         "stats": {
-            "notes": notes_count,
-            "projects": projects_count,
-            "assets": total_assets,
-            "assets_by_type": assets
+            "wiki_pages": wiki_count,
+            "raw_files": max(raw_files, 0),
+            "outputs": outputs_count,
         }
     }
 
 @app.get("/api/notes")
 async def list_notes():
-    notes_path = Path(VAULT_PATH) / "notes"
+    """List wiki pages (legacy endpoint name for frontend compatibility)."""
+    wiki_path = Path(VAULT_PATH) / "wiki"
     notes = []
-    if notes_path.exists():
-        for md_file in notes_path.glob("**/*.md"):
-            with open(md_file, "r") as f:
+    if wiki_path.exists():
+        for md_file in wiki_path.glob("**/*.md"):
+            if md_file.name == "index.md":
+                continue
+            with open(md_file, "r", encoding="utf-8") as f:
                 content = f.read()
             title = md_file.stem.replace("-", " ").title()
             for line in content.split("\n"):
@@ -377,19 +408,19 @@ async def list_notes():
             notes.append({
                 "id": md_file.stem,
                 "title": title,
-                "path": str(md_file.relative_to(notes_path)),
+                "path": str(md_file.relative_to(VAULT_PATH)),
                 "updatedAt": datetime.fromtimestamp(md_file.stat().st_mtime).isoformat()
             })
     return {"notes": notes, "total": len(notes)}
 
 @app.get("/api/notes/{note_id}")
 async def get_note(note_id: str):
-    notes_path = Path(VAULT_PATH) / "notes"
-    found_files = list(notes_path.glob(f"**/{note_id}.md")) + list(notes_path.glob(f"**/*{note_id}*.md"))
+    wiki_path = Path(VAULT_PATH) / "wiki"
+    found_files = list(wiki_path.glob(f"**/{note_id}.md")) + list(wiki_path.glob(f"**/*{note_id}*.md"))
     if not found_files:
         raise HTTPException(status_code=404, detail="Nota no encontrada")
     file_path = found_files[0]
-    with open(file_path, "r") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
     return {
         "id": note_id,
@@ -591,51 +622,7 @@ async def get_init_config():
     }
     return safe_config
 
-@app.post("/api/init/configure")
-async def configure_agent(request: dict):
-    try:
-        print("🔵 Recibida petición:", request)
-        agent_name = request.get("agentName", "").strip()
-        personality = request.get("personality", "").strip()
-        api_key = request.get("apiKey", "").strip()
-        channels = request.get("channels", {})
-        dashboard_user = request.get("dashboardUser", "").strip()
-        dashboard_password = request.get("dashboardPassword", "").strip()
-
-        if not agent_name:
-            agent_name = "Hermes"
-        if not personality:
-            personality = "Eres un asistente útil, amigable y profesional. Ayudas a organizar el conocimiento y responder preguntas de manera clara y concisa."
-        if not api_key:
-            raise HTTPException(status_code=400, detail="La API Key/LLM es obligatoria")
-
-        config = {
-            "agentName": agent_name,
-            "personality": personality,
-            "apiKey": api_key,
-            "channels": {
-                "web": True,
-                "telegram": channels.get("telegram", False),
-                "whatsapp": channels.get("whatsapp", False),
-                "discord": channels.get("discord", False)
-            },
-            "dashboard": {
-                "user": dashboard_user,
-                "password": dashboard_password
-            },
-            "createdAt": datetime.now().isoformat(),
-            "updatedAt": datetime.now().isoformat()
-        }
-
-        save_agent_config(config)
-        set_agent_key("hermes", api_key)
-
-        return {"success": True, "message": "Configuración guardada correctamente", "agentName": agent_name}
-    except Exception as e:
-        import traceback
-        print("❌ ERROR:", traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
-
+# (El endpoint /api/init/configure está definido más abajo, ampliado con soporte para modelMode y hardware)
 
 @app.put("/api/agent/config")
 async def update_agent_config(request: dict):
@@ -831,9 +818,180 @@ async def agent_status_page():
 @app.get("/api/system/info")
 async def system_info():
     return {
-        "version": "1.0.0",
+        "version": "2.0.0",
         "vault_path": VAULT_PATH,
         "python_version": "3.11",
         "framework": "FastAPI",
+        "vault_structure": ["raw", "wiki", "outputs"],
+        "subagents": ["coordinador", "editor", "investigador-resumidor", "indexador", "sintetizador"],
         "openrouter_available": bool(get_agent_key("hermes")) or bool(OPENROUTER_API_KEY)
     }
+
+
+# ============================================
+# ENDPOINTS PARA HARDWARE Y MODELOS LOCALES
+# ============================================
+
+def _detect_hw_profile(cpu: str, ram_gb: int, gpu: str, vram_gb: int = 0) -> str:
+    """Return 'low', 'medium', or 'high' based on user hardware specs."""
+    ram = int(ram_gb or 8)
+    has_gpu = bool(gpu and gpu.lower() not in ("no", "none", "sin gpu", "integrated", "integrada"))
+    vram = int(vram_gb or 0)
+
+    if ram >= 16 and vram >= 8:
+        return "high"
+    if ram >= 8 and (vram >= 4 or has_gpu):
+        return "medium"
+    return "low"
+
+
+MODEL_ASSIGNMENTS = {
+    "low": {
+        "coordinador": "qwen2.5:3b",
+        "editor": "qwen2.5:3b",
+        "investigador-resumidor": "qwen2.5:3b",
+        "indexador": "llama3.2:3b",
+        "sintetizador": "qwen2.5:3b",
+    },
+    "medium": {
+        "coordinador": "gemma3:4b",
+        "editor": "gemma3:4b",
+        "investigador-resumidor": "qwen2.5:7b",
+        "indexador": "llama3.2:3b",
+        "sintetizador": "gemma3:4b",
+    },
+    "high": {
+        "coordinador": "qwen2.5:14b",
+        "editor": "llama3.1:8b",
+        "investigador-resumidor": "qwen2.5:14b",
+        "indexador": "llama3.2:3b",
+        "sintetizador": "llama3.1:8b",
+    },
+}
+
+
+@app.post("/api/init/hardware")
+async def detect_hardware(specs: dict):
+    """Recibe specs de hardware del usuario y devuelve el perfil + modelos recomendados."""
+    cpu = specs.get("cpu", "")
+    ram = int(specs.get("ram_gb", 8))
+    gpu = specs.get("gpu", "")
+    vram = int(specs.get("vram_gb", 0))
+
+    profile = _detect_hw_profile(cpu, ram, gpu, vram)
+    models = MODEL_ASSIGNMENTS[profile]
+
+    return {
+        "profile": profile,
+        "models": models,
+        "all_models_to_install": sorted(set(models.values())),
+        "specs_received": {"cpu": cpu, "ram_gb": ram, "gpu": gpu, "vram_gb": vram}
+    }
+
+
+@app.post("/api/init/install-models")
+async def install_models(request: dict):
+    """Lanza la instalación de modelos Ollama en el contenedor cerebro-ollama."""
+    hw_profile = request.get("profile", "medium")
+    client = get_docker_client()
+    if not client:
+        return {"success": False, "message": "No se pudo conectar con Docker"}
+
+    try:
+        # Verificar si el contenedor Ollama ya está corriendo
+        try:
+            ollama_container = client.containers.get("cerebro-ollama")
+            ollama_container.reload()
+            if ollama_container.status != "running":
+                ollama_container.start()
+        except docker.errors.NotFound:
+            return {"success": False, "message": "El contenedor cerebro-ollama no existe. Reinicia el sistema."}
+
+        # Ejecutar el script de instalación de modelos dentro del contenedor Ollama
+        exec_result = ollama_container.exec_run(
+            ["/bin/bash", "-c", f"bash /app/scripts/install_models.sh {hw_profile}"],
+            stream=True
+        )
+
+        output_lines = []
+        for chunk in exec_result.output:
+            line = chunk.decode("utf-8", errors="replace")
+            output_lines.append(line)
+            print(line, end="")
+
+        return {
+            "success": True,
+            "message": f"Modelos instalados (perfil: {hw_profile})",
+            "output": "".join(output_lines)[-2000:]
+        }
+    except Exception as e:
+        return {"success": False, "message": f"Error al instalar modelos: {e}"}
+
+
+@app.post("/api/init/configure")
+async def configure_agent(request: dict):
+    """Endpoint ampliado: soporta modelMode (openrouter/local) y hardware specs."""
+    try:
+        print("🔵 Recibida petición:", request)
+        agent_name = request.get("agentName", "").strip()
+        personality = request.get("personality", "").strip()
+        api_key = request.get("apiKey", "").strip()
+        channels = request.get("channels", {})
+        dashboard_user = request.get("dashboardUser", "").strip()
+        dashboard_password = request.get("dashboardPassword", "").strip()
+        model_mode = request.get("modelMode", "openrouter").strip()
+        hardware = request.get("hardware", {})
+
+        if not agent_name:
+            agent_name = "Hermes"
+        if not personality:
+            personality = "Eres un asistente útil, amigable y profesional. Ayudas a organizar el conocimiento y responder preguntas de manera clara y concisa."
+
+        # Si es modo OpenRouter, la API key es obligatoria
+        if model_mode == "openrouter" and not api_key:
+            raise HTTPException(status_code=400, detail="La API Key es obligatoria para OpenRouter")
+
+        # Si es modo local, la API key puede estar vacía
+        if model_mode == "local" and not api_key:
+            api_key = ""
+
+        config = {
+            "agentName": agent_name,
+            "personality": personality,
+            "apiKey": api_key,
+            "modelMode": model_mode,
+            "hardware": hardware,
+            "channels": {
+                "web": True,
+                "telegram": channels.get("telegram", False),
+                "whatsapp": channels.get("whatsapp", False),
+                "discord": channels.get("discord", False)
+            },
+            "dashboard": {
+                "user": dashboard_user,
+                "password": dashboard_password
+            },
+            "createdAt": datetime.now().isoformat(),
+            "updatedAt": datetime.now().isoformat()
+        }
+
+        # Si hay hardware, calcular el perfil
+        if hardware and model_mode == "local":
+            profile = _detect_hw_profile(
+                hardware.get("cpu", ""),
+                int(hardware.get("ram_gb", 8)),
+                hardware.get("gpu", ""),
+                int(hardware.get("vram_gb", 0))
+            )
+            config["hwProfile"] = profile
+            config["localModels"] = MODEL_ASSIGNMENTS[profile]
+
+        save_agent_config(config)
+        if api_key:
+            set_agent_key("hermes", api_key)
+
+        return {"success": True, "message": "Configuración guardada correctamente", "agentName": agent_name}
+    except Exception as e:
+        import traceback
+        print("❌ ERROR:", traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
