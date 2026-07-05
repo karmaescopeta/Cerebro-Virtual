@@ -1,0 +1,10 @@
+{
+  "defaultModel": "openai/gpt-4o-mini",
+  "availableModels": [
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-exp"
+  ],
+  "provider": "openrouter"
+}
