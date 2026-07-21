@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 import os
@@ -33,6 +33,11 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 AGENT_KEYS_PATH = Path(VAULT_PATH) / "system" / "agent-keys.json"
 AGENT_CONFIG_PATH = Path(VAULT_PATH) / "system" / "agent-config.json"
 AGENT_INTERNAL_URL = os.getenv("AGENT_INTERNAL_URL", "http://cerebro-agente:8080")
+
+# ponytail: servir archivos del vault (imagenes para preview en chat)
+from fastapi.staticfiles import StaticFiles
+if Path(VAULT_PATH).exists():
+    app.mount("/vault-static", StaticFiles(directory=VAULT_PATH), name="vault-static")
 
 
 # ============================================
@@ -69,76 +74,6 @@ def save_agent_config(data):
     AGENT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(AGENT_CONFIG_PATH, "w") as f:
         json.dump(data, f, indent=2)
-
-def search_vault(query: str, limit: int = 5):
-    """Search wiki/ first, then raw/ as fallback."""
-    results = []
-    # Search wiki/ first (processed, structured knowledge)
-    wiki_path = Path(VAULT_PATH) / "wiki"
-    if wiki_path.exists():
-        for md_file in wiki_path.glob("**/*.md"):
-            try:
-                with open(md_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if query.lower() in content.lower():
-                    title = md_file.stem.replace("-", " ").title()
-                    for line in content.split("\n"):
-                        if line.startswith("# "):
-                            title = line[2:].strip()
-                            break
-                    lines = content.split("\n")
-                    context = ""
-                    for i, line in enumerate(lines):
-                        if query.lower() in line.lower():
-                            start = max(0, i-2)
-                            end = min(len(lines), i+3)
-                            context = "\n".join(lines[start:end])
-                            break
-                    results.append({
-                        "title": title,
-                        "path": str(md_file.relative_to(VAULT_PATH)),
-                        "content": context[:500],
-                        "source": "wiki"
-                    })
-                    if len(results) >= limit:
-                        return results
-            except Exception as e:
-                print(f"Error leyendo {md_file}: {e}")
-                continue
-
-    # Fallback: search raw/ (original files, only .txt and .md)
-    raw_path = Path(VAULT_PATH) / "raw"
-    if raw_path.exists() and len(results) < limit:
-        for md_file in raw_path.glob("**/*.md"):
-            try:
-                with open(md_file, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if query.lower() in content.lower():
-                    title = md_file.stem.replace("-", " ").title()
-                    for line in content.split("\n"):
-                        if line.startswith("# "):
-                            title = line[2:].strip()
-                            break
-                    lines = content.split("\n")
-                    context = ""
-                    for i, line in enumerate(lines):
-                        if query.lower() in line.lower():
-                            start = max(0, i-2)
-                            end = min(len(lines), i+3)
-                            context = "\n".join(lines[start:end])
-                            break
-                    results.append({
-                        "title": title,
-                        "path": str(md_file.relative_to(VAULT_PATH)),
-                        "content": context[:500],
-                        "source": "raw"
-                    })
-                    if len(results) >= limit:
-                        break
-            except Exception as e:
-                print(f"Error leyendo {md_file}: {e}")
-                continue
-    return results
 
 
 # ============================================
@@ -274,64 +209,6 @@ def wait_for_agent_ready(timeout=180, interval=2):
         time.sleep(interval)
     return False
 
-def restart_agent_container():
-    """Reinicia el contenedor del agente."""
-    client = get_docker_client()
-    if not client:
-        try:
-            result = subprocess.run(
-                ["docker", "restart", "cerebro-agente"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                return True, "Agente reiniciado (via subprocess)."
-            else:
-                return False, f"Error: {result.stderr}"
-        except Exception as e:
-            return False, f"Error al reiniciar: {e}"
-    try:
-        container = client.containers.get("cerebro-agente")
-        container.restart()
-        return True, "Agente reiniciado correctamente."
-    except Exception as e:
-        return False, f"Error al reiniciar el agente: {e}"
-
-def delete_agent_config_file():
-    client = get_docker_client()
-    if not client:
-        try:
-            result = subprocess.run(
-                ["docker", "exec", "cerebro-agente", "rm", "-f", "/root/.hermes/config.yaml"],
-                capture_output=True,
-                text=True,
-                check=False
-            )
-            if result.returncode == 0:
-                return True, "Archivo de configuración eliminado."
-            else:
-                return False, f"Error: {result.stderr}"
-        except Exception as e:
-            return False, f"Error al eliminar config.yaml: {e}"
-    try:
-        container = client.containers.get("cerebro-agente")
-        exec_result = container.exec_run(["rm", "-f", "/root/.hermes/config.yaml"])
-        if exec_result.exit_code == 0:
-            return True, "Archivo de configuración eliminado."
-        else:
-            return False, f"Error al eliminar archivo: {exec_result.output.decode()}"
-    except Exception as e:
-        return False, f"Error al eliminar config.yaml: {e}"
-
-def stop_and_remove_agent():
-    try:
-        subprocess.run(["docker", "stop", "cerebro-agente"], capture_output=True, check=False)
-        subprocess.run(["docker", "rm", "-f", "cerebro-agente"], capture_output=True, check=False)
-        return True, "Agente detenido y eliminado."
-    except Exception as e:
-        return False, f"Error al eliminar agente: {e}"
-
 
 # ============================================
 # ENDPOINTS DE ESTADO Y SALUD
@@ -428,29 +305,6 @@ async def get_note(note_id: str):
         "content": content
     }
 
-@app.get("/api/projects")
-async def list_projects():
-    projects_path = Path(VAULT_PATH) / "projects"
-    projects = []
-    if projects_path.exists():
-        for project_dir in projects_path.iterdir():
-            if project_dir.is_dir():
-                project_file = project_dir / "project.md"
-                if project_file.exists():
-                    with open(project_file, "r") as f:
-                        content = f.read()
-                    title = project_dir.name
-                    for line in content.split("\n"):
-                        if line.startswith("# "):
-                            title = line[2:].strip()
-                            break
-                    projects.append({
-                        "id": project_dir.name,
-                        "title": title,
-                        "path": str(project_dir.relative_to(VAULT_PATH))
-                    })
-    return {"projects": projects, "total": len(projects)}
-
 @app.get("/api/config/models")
 async def get_models_config():
     models_path = Path(VAULT_PATH) / "system" / "models.json"
@@ -500,6 +354,12 @@ async def set_hermes_key(request: dict):
     if not api_key:
         raise HTTPException(status_code=400, detail="API key no puede estar vacía")
     set_agent_key("hermes", api_key)
+    # También actualizar agent-config.json para que generate_config.py la use
+    config = get_agent_config()
+    if config:
+        config["apiKey"] = api_key
+        config["updatedAt"] = datetime.now().isoformat()
+        save_agent_config(config)
     return {"success": True, "agent": "hermes", "message": "API key guardada correctamente"}
 
 @app.delete("/api/agents/hermes/key")
@@ -512,8 +372,135 @@ async def delete_hermes_key():
 
 
 # ============================================
-# ENDPOINT DE CHAT CON HERMES (IA REAL + RAG)
+# ENDPOINT DE CHAT CON HERMES (RAG + sesión persistente)
 # ============================================
+
+def _normalize(s: str) -> str:
+    """Quita acentos y lowercase para comparación tolerante."""
+    return s.lower().translate(str.maketrans("áéíóúüñ", "aeiouun"))
+
+def search_vault(query: str, limit: int = 5):
+    """Search wiki/ then raw/ by palabras clave. Acento-insensible."""
+    # ponytail: extraer palabras significativas (>=3 chars, sin puntuacion, ignorar stopwords)
+    import re
+    stopwords = {"que","del","los","las","con","por","para","una","uno","como","sobre","sabe","saben","dame","dime","hay","tiene","mio","mas","muy","tan","the","and","for","what","how","tell","me","about"}
+    words = [w for w in re.split(r'\W+', _normalize(query)) if len(w) >= 3 and w not in stopwords]
+    if not words:
+        words = [_normalize(query)]
+
+    def score(content):
+        c = _normalize(content)
+        return sum(1 for w in words if w in c)
+
+    results = []
+    wiki_path = Path(VAULT_PATH) / "wiki"
+    if wiki_path.exists():
+        scored = []
+        for md_file in wiki_path.glob("**/*.md"):
+            try:
+                content = md_file.read_text(encoding="utf-8")
+                s = score(content)
+                if s > 0:
+                    title = md_file.stem.replace("-", " ").title()
+                    for line in content.split("\n"):
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+                    scored.append((s, {"title": title, "path": str(md_file.relative_to(VAULT_PATH)), "content": content[:500]}))
+            except Exception:
+                continue
+        scored.sort(key=lambda x: -x[0])
+        results = [r for _, r in scored[:limit]]
+
+    if len(results) < limit:
+        raw_path = Path(VAULT_PATH) / "raw"
+        if raw_path.exists():
+            scored = []
+            for f in raw_path.glob("**/*.{txt,md}"):
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    s = score(content)
+                    if s > 0:
+                        scored.append((s, {"title": f.stem, "path": str(f.relative_to(VAULT_PATH)), "content": content[:500]}))
+                except Exception:
+                    continue
+            scored.sort(key=lambda x: -x[0])
+            results.extend(r for _, r in scored[:limit - len(results)])
+    return results
+
+
+# ponytail: chunker + sintetizador lossless — sin truncar, multi-petición por archivo
+CHUNK_SIZE = 6000  # chars por chunk (~1500 tokens, deja margen respuesta)
+HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
+
+
+def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list:
+    """Divide texto en chunks por párrafo (no corta a mitad de línea)."""
+    if len(text) <= size:
+        return [text]
+    chunks, cur, cur_len = [], [], 0
+    for para in text.split("\n"):
+        if cur_len + len(para) > size and cur:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(para)
+        cur_len += len(para) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+def _parse_hermes_output(stdout: str) -> str:
+    """Extrae texto entre separadores unicode de Hermes."""
+    lines = stdout.split("\n")
+    out, in_resp = [], False
+    for ln in lines:
+        if "Hermes" in ln and "─" in ln:
+            in_resp = True
+            continue
+        if in_resp:
+            if ln.startswith("Resume this session") or ln.startswith("Session:"):
+                break
+            out.append(ln.strip(" ╭╮╰╯│─"))
+    while out and not out[-1]:
+        out.pop()
+    return "\n".join(out).strip() or stdout.strip()
+
+
+def _synthesize_wiki(stem: str, extracted_text: str, api_key: str) -> str:
+    """Sintetiza wiki lossless. Multi-chunk si el texto es grande.
+    Chunk 1: instrucciones + título. Chunks N>: 'continúa el documento, misma estructura'.
+    Devuelve Markdown concatenado."""
+    chunks = _chunk_text(extracted_text)
+    parts = []
+    for i, chunk in enumerate(chunks):
+        if i == 0:
+            prompt = (
+                "Responde SOLO con Markdown, sin preámbulos ni explicaciones. "
+                "Reorganiza TODO el texto en una página wiki. NO resumas, NO omitas contenido. "
+                "Estructura: # Título, ## Secciones, preserva toda la información original, "
+                "añade [[wikilinks]] a temas relacionados. "
+                f"{'Es el inicio del documento.' if len(chunks) > 1 else ''}\n\nTexto:\n\n{chunk}"
+            )
+        else:
+            prompt = (
+                f"Continúa el mismo documento wiki (parte {i+1}/{len(chunks)}). "
+                "Misma estructura: ## Secciones, sin omitir contenido, con [[wikilinks]]. "
+                "No repitas el título. Empieza directamente con ##.\n\nTexto:\n\n{chunk}"
+            )
+        result = subprocess.run(
+            ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
+             "cerebro-agente", HERMES_BIN, "chat", "-q", prompt],
+            capture_output=True, text=True, timeout=180
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Hermes chunk {i+1} falló: {result.stderr[:200]}")
+        parsed = _parse_hermes_output(result.stdout)
+        if not parsed:
+            raise RuntimeError(f"Hermes chunk {i+1} respuesta vacía")
+        parts.append(parsed)
+    return "\n\n".join(parts)
+
 
 @app.post("/api/chat")
 async def chat(message: dict):
@@ -523,76 +510,83 @@ async def chat(message: dict):
 
     config = get_agent_config()
     agent_name = config.get("agentName", "Hermes") if config else "Hermes"
-    personality = config.get("personality", "Eres un asistente útil y amigable.") if config else "Eres un asistente útil y amigable."
 
-    search_results = search_vault(user_message)
-    context_text = ""
-    if search_results:
-        context_text = "\n\n---\n**Información relevante encontrada en tu vault:**\n"
-        for i, result in enumerate(search_results, 1):
-            context_text += f"\n**{i}. {result['title']}**\n{result['content']}...\n"
-        context_text += "\n---\n"
-
-    api_key = get_agent_key("hermes")
-    if not api_key:
-        api_key = OPENROUTER_API_KEY
-
+    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
     if not api_key:
         return {
-            "response": f"⚠️ **{agent_name} no tiene una API key configurada.**\n\nPor favor, ve a **Ajustes > Apis Agentes** y configura tu API key.",
+            "response": f"⚠️ **{agent_name} no tiene una API key configurada.**",
             "context": {"error": "no_api_key"}
         }
 
+    # ponytail: RAG — buscar en wiki/ antes de enviar a Hermes
+    search_results = search_vault(user_message)
+    context_text = ""
+    if search_results:
+        context_text = "\n\n---\n**Contexto del vault:**\n"
+        for i, r in enumerate(search_results, 1):
+            context_text += f"\n**{i}. {r['title']}** ({r['path']})\n{r['content']}...\n"
+        context_text += "---\n"
+
+    # ponytail: sesión persistente via --continue (recuerda mensajes previos del mismo proceso)
+    HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
+    full_message = f"{context_text}\n\nPregunta: {user_message}" if context_text else user_message
+
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": "openai/gpt-4o-mini",
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": f"{personality} Te llamas {agent_name}. Usa la siguiente información del vault del usuario para responder con contexto, pero solo si es relevante."
-                        },
-                        {
-                            "role": "user",
-                            "content": f"{context_text}\n\nPregunta del usuario: {user_message}"
-                        }
-                    ]
-                },
-                timeout=30.0
+        result = subprocess.run(
+            ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
+             "cerebro-agente", HERMES_BIN, "chat", "-q", "--continue", full_message],
+            capture_output=True, text=True, timeout=120
+        )
+
+        if result.returncode != 0:
+            # ponytail: --continue falla si no hay sesión previa, retry sin flag
+            result = subprocess.run(
+                ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
+                 "cerebro-agente", HERMES_BIN, "chat", "-q", full_message],
+                capture_output=True, text=True, timeout=120
             )
-
-            if response.status_code == 200:
-                data = response.json()
-                ai_response = data.get("choices", [{}])[0].get("message", {}).get("content", "No se pudo generar respuesta.")
+            if result.returncode != 0:
                 return {
-                    "response": ai_response,
-                    "context": {
-                        "model": "openai/gpt-4o-mini",
-                        "vault_results": len(search_results),
-                        "timestamp": datetime.now().isoformat()
-                    }
-                }
-            else:
-                error_detail = response.text
-                return {
-                    "response": f"❌ **Error al conectar con OpenRouter**\n\nCódigo: {response.status_code}\n\nDetalle: {error_detail[:200]}...",
-                    "context": {"error": "api_error", "status_code": response.status_code}
+                    "response": f"❌ **Error Hermes:**\n\n{result.stderr[:500]}",
+                    "context": {"error": "hermes_exec_error"}
                 }
 
-    except httpx.TimeoutException:
+        # ponytail: parse naive — respuesta entre separadores unicode
+        output = result.stdout
+        lines = output.split("\n")
+        response_lines = []
+        in_response = False
+        for line in lines:
+            if "Hermes" in line and "─" in line:
+                in_response = True
+                continue
+            if in_response:
+                if line.startswith("Resume this session") or line.startswith("Session:"):
+                    break
+                response_lines.append(line.strip(" ╭╮╰╯│─"))
+        while response_lines and not response_lines[-1]:
+            response_lines.pop()
+
+        ai_response = "\n".join(response_lines).strip() or output.strip()
+
         return {
-            "response": "⏰ **Tiempo de espera agotado.** La conexión con OpenRouter tardó demasiado. Intenta de nuevo.",
+            "response": ai_response,
+            "context": {
+                "model": "openai/gpt-4o-mini",
+                "via": "hermes-coordinador",
+                "vault_results": len(search_results),
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "response": "⏰ **Tiempo de espera agotado.**",
             "context": {"error": "timeout"}
         }
     except Exception as e:
         return {
-            "response": f"❌ **Error inesperado:** {str(e)}",
+            "response": f"❌ **Error:** {str(e)}",
             "context": {"error": str(e)}
         }
 
@@ -703,6 +697,65 @@ async def restart_agent():
             return {"success": False, "message": f"Error: {result.stderr}"}
     except Exception as e:
         return {"success": False, "message": str(e)}
+
+
+@app.post("/api/agent/full-restart")
+async def full_restart_agent():
+    """Destruye el contenedor del agente, borra la imagen y lo reconstruye desde cero.
+
+    El vault (raw/, wiki/, outputs/) NO se toca. Solo se limpia el estado
+    del sistema-agente (config.yaml, perfiles instalados, caché de Hermes).
+    """
+    import subprocess
+    client = get_docker_client()
+
+    # 1. Detener y eliminar el contenedor del agente
+    try:
+        subprocess.run(["docker", "stop", "cerebro-agente"], capture_output=True, check=False, timeout=30)
+    except Exception:
+        pass
+    try:
+        subprocess.run(["docker", "rm", "-f", "cerebro-agente"], capture_output=True, check=False, timeout=30)
+    except Exception:
+        pass
+
+    # 2. Borrar la imagen del agente para forzar rebuild limpio
+    image_tag = os.getenv("AGENT_IMAGE", "cerebrovirtual-sistema-agente:latest")
+    try:
+        if client:
+            client.images.remove(image_tag, force=True)
+        else:
+            subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True, check=False, timeout=60)
+    except Exception as e:
+        print(f"⚠️ No se pudo borrar la imagen {image_tag}: {e}")
+
+    # 3. Reconstruir la imagen desde cero
+    build_context = os.getenv("AGENT_BUILD_CONTEXT", "/app/sistema-agente")
+    try:
+        if client and Path(build_context).exists():
+            print("🔨 Reconstruyendo imagen del agente desde cero...")
+            client.images.build(path=build_context, tag=image_tag, rm=True)
+        elif client:
+            client.images.pull(image_tag)
+        else:
+            subprocess.run(
+                ["docker", "compose", "--profile", "agent", "build", "--no-cache", "sistema-agente"],
+                capture_output=True, check=False, timeout=600,
+                cwd="/app"
+            )
+    except Exception as e:
+        return {"success": False, "message": f"Error al reconstruir la imagen: {e}"}
+
+    # 4. Arrancar el contenedor nuevo
+    success, message = start_agent_container()
+    if not success:
+        return {"success": False, "message": message}
+
+    # 5. Esperar a que Hermes esté listo
+    if wait_for_agent_ready(timeout=180):
+        return {"success": True, "message": "Agente reconstruido y arrancado desde cero correctamente."}
+    else:
+        return {"success": False, "message": "El agente no respondió a tiempo después del reinicio."}
 
 
 @app.post("/api/agent/start")
@@ -828,109 +881,10 @@ async def system_info():
     }
 
 
-# ============================================
-# ENDPOINTS PARA HARDWARE Y MODELOS LOCALES
-# ============================================
-
-def _detect_hw_profile(cpu: str, ram_gb: int, gpu: str, vram_gb: int = 0) -> str:
-    """Return 'low', 'medium', or 'high' based on user hardware specs."""
-    ram = int(ram_gb or 8)
-    has_gpu = bool(gpu and gpu.lower() not in ("no", "none", "sin gpu", "integrated", "integrada"))
-    vram = int(vram_gb or 0)
-
-    if ram >= 16 and vram >= 8:
-        return "high"
-    if ram >= 8 and (vram >= 4 or has_gpu):
-        return "medium"
-    return "low"
-
-
-MODEL_ASSIGNMENTS = {
-    "low": {
-        "coordinador": "qwen2.5:3b",
-        "editor": "qwen2.5:3b",
-        "investigador-resumidor": "qwen2.5:3b",
-        "indexador": "llama3.2:3b",
-        "sintetizador": "qwen2.5:3b",
-    },
-    "medium": {
-        "coordinador": "gemma3:4b",
-        "editor": "gemma3:4b",
-        "investigador-resumidor": "qwen2.5:7b",
-        "indexador": "llama3.2:3b",
-        "sintetizador": "gemma3:4b",
-    },
-    "high": {
-        "coordinador": "qwen2.5:14b",
-        "editor": "llama3.1:8b",
-        "investigador-resumidor": "qwen2.5:14b",
-        "indexador": "llama3.2:3b",
-        "sintetizador": "llama3.1:8b",
-    },
-}
-
-
-@app.post("/api/init/hardware")
-async def detect_hardware(specs: dict):
-    """Recibe specs de hardware del usuario y devuelve el perfil + modelos recomendados."""
-    cpu = specs.get("cpu", "")
-    ram = int(specs.get("ram_gb", 8))
-    gpu = specs.get("gpu", "")
-    vram = int(specs.get("vram_gb", 0))
-
-    profile = _detect_hw_profile(cpu, ram, gpu, vram)
-    models = MODEL_ASSIGNMENTS[profile]
-
-    return {
-        "profile": profile,
-        "models": models,
-        "all_models_to_install": sorted(set(models.values())),
-        "specs_received": {"cpu": cpu, "ram_gb": ram, "gpu": gpu, "vram_gb": vram}
-    }
-
-
-@app.post("/api/init/install-models")
-async def install_models(request: dict):
-    """Lanza la instalación de modelos Ollama en el contenedor cerebro-ollama."""
-    hw_profile = request.get("profile", "medium")
-    client = get_docker_client()
-    if not client:
-        return {"success": False, "message": "No se pudo conectar con Docker"}
-
-    try:
-        # Verificar si el contenedor Ollama ya está corriendo
-        try:
-            ollama_container = client.containers.get("cerebro-ollama")
-            ollama_container.reload()
-            if ollama_container.status != "running":
-                ollama_container.start()
-        except docker.errors.NotFound:
-            return {"success": False, "message": "El contenedor cerebro-ollama no existe. Reinicia el sistema."}
-
-        # Ejecutar el script de instalación de modelos dentro del contenedor Ollama
-        exec_result = ollama_container.exec_run(
-            ["/bin/bash", "-c", f"bash /app/scripts/install_models.sh {hw_profile}"],
-            stream=True
-        )
-
-        output_lines = []
-        for chunk in exec_result.output:
-            line = chunk.decode("utf-8", errors="replace")
-            output_lines.append(line)
-            print(line, end="")
-
-        return {
-            "success": True,
-            "message": f"Modelos instalados (perfil: {hw_profile})",
-            "output": "".join(output_lines)[-2000:]
-        }
-    except Exception as e:
-        return {"success": False, "message": f"Error al instalar modelos: {e}"}
-
 
 @app.post("/api/init/configure")
 async def configure_agent(request: dict):
-    """Endpoint ampliado: soporta modelMode (openrouter/local) y hardware specs."""
+    """Guarda la configuración del agente. Siempre modelMode=openrouter."""
     try:
         print("🔵 Recibida petición:", request)
         agent_name = request.get("agentName", "").strip()
@@ -939,28 +893,23 @@ async def configure_agent(request: dict):
         channels = request.get("channels", {})
         dashboard_user = request.get("dashboardUser", "").strip()
         dashboard_password = request.get("dashboardPassword", "").strip()
-        model_mode = request.get("modelMode", "openrouter").strip()
-        hardware = request.get("hardware", {})
+        telegram_token = request.get("telegramToken", "").strip()
+        discord_token = request.get("discordToken", "").strip()
+        whatsapp_phone = request.get("whatsappPhone", "").strip()
 
         if not agent_name:
             agent_name = "Hermes"
         if not personality:
             personality = "Eres un asistente útil, amigable y profesional. Ayudas a organizar el conocimiento y responder preguntas de manera clara y concisa."
 
-        # Si es modo OpenRouter, la API key es obligatoria
-        if model_mode == "openrouter" and not api_key:
+        if not api_key:
             raise HTTPException(status_code=400, detail="La API Key es obligatoria para OpenRouter")
-
-        # Si es modo local, la API key puede estar vacía
-        if model_mode == "local" and not api_key:
-            api_key = ""
 
         config = {
             "agentName": agent_name,
             "personality": personality,
             "apiKey": api_key,
-            "modelMode": model_mode,
-            "hardware": hardware,
+            "modelMode": "openrouter",
             "channels": {
                 "web": True,
                 "telegram": channels.get("telegram", False),
@@ -971,27 +920,549 @@ async def configure_agent(request: dict):
                 "user": dashboard_user,
                 "password": dashboard_password
             },
+            "channelTokens": {
+                "telegram": telegram_token,
+                "discord": discord_token,
+                "whatsapp": whatsapp_phone
+            },
             "createdAt": datetime.now().isoformat(),
             "updatedAt": datetime.now().isoformat()
         }
 
-        # Si hay hardware, calcular el perfil
-        if hardware and model_mode == "local":
-            profile = _detect_hw_profile(
-                hardware.get("cpu", ""),
-                int(hardware.get("ram_gb", 8)),
-                hardware.get("gpu", ""),
-                int(hardware.get("vram_gb", 0))
-            )
-            config["hwProfile"] = profile
-            config["localModels"] = MODEL_ASSIGNMENTS[profile]
-
         save_agent_config(config)
-        if api_key:
-            set_agent_key("hermes", api_key)
+        set_agent_key("hermes", api_key)
 
         return {"success": True, "message": "Configuración guardada correctamente", "agentName": agent_name}
     except Exception as e:
         import traceback
         print("❌ ERROR:", traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+
+
+# ============================================
+# ENDPOINTS PARA EXPORTAR/IMPORTAR VAULT
+# ============================================
+
+@app.get("/api/vault/export")
+async def export_vault():
+    """Genera un .tar.gz del vault y lo sirve como descarga."""
+    import tempfile
+    import tarfile
+    from fastapi.responses import FileResponse
+
+    vault_path = Path(VAULT_PATH)
+    if not vault_path.exists():
+        raise HTTPException(status_code=404, detail="Vault no encontrado")
+
+    timestamp = datetime.now().strftime("%Y-%m-%d")
+    temp_dir = tempfile.mkdtemp()
+    export_file = Path(temp_dir) / f"vault-backup-{timestamp}.tar.gz"
+
+    try:
+        with tarfile.open(export_file, "w:gz") as tar:
+            for item in vault_path.iterdir():
+                if item.name == ".git":
+                    continue
+                tar.add(str(item), arcname=item.name)
+
+        return FileResponse(
+            path=str(export_file),
+            media_type="application/gzip",
+            filename=f"vault-backup-{timestamp}.tar.gz"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al exportar: {e}")
+
+
+@app.post("/api/vault/import")
+async def import_vault(file: bytes = File(...)):
+    """Acepta un .tar.gz y lo descomprime en el vault."""
+    import tempfile
+    import tarfile
+    import io
+
+    vault_path = Path(VAULT_PATH)
+
+    try:
+        # Leer el archivo subido
+        tar_bytes = file
+        tar_io = io.BytesIO(tar_bytes)
+
+        # Verificar que es un tar.gz válido
+        try:
+            tar = tarfile.open(fileobj=tar_io, mode="r:gz")
+        except tarfile.ReadError:
+            raise HTTPException(status_code=400, detail="El archivo no es un .tar.gz válido")
+
+        # Crear backup del vault actual por seguridad
+        backup_dir = vault_path.parent / f"vault-backup-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        if vault_path.exists():
+            import shutil
+            shutil.copytree(str(vault_path), str(backup_dir), dirs_exist_ok=True)
+
+        # Extraer el tar.gz en una carpeta temporal primero
+        temp_dir = Path(tempfile.mkdtemp())
+        tar.extractall(str(temp_dir))
+        tar.close()
+
+        # Verificar que la estructura es válida
+        required_dirs = ["raw", "wiki", "outputs", "system"]
+        found_dirs = [d.name for d in temp_dir.iterdir() if d.is_dir()]
+        missing = [d for d in required_dirs if d not in found_dirs]
+
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"El vault importado no tiene la estructura válida. Faltan: {', '.join(missing)}"
+            )
+
+        # Copiar el contenido al vault
+        import shutil
+        for item in temp_dir.iterdir():
+            dest = vault_path / item.name
+            if dest.exists():
+                if dest.is_dir():
+                    shutil.rmtree(str(dest))
+                else:
+                    dest.unlink()
+            shutil.move(str(item), str(dest))
+
+        # Limpiar temporal
+        shutil.rmtree(str(temp_dir), ignore_errors=True)
+
+        return {
+            "success": True,
+            "message": f"Vault importado correctamente. Backup anterior en: {backup_dir.name}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al importar: {e}")
+
+
+# ============================================
+# ENDPOINT PARA SUBIR ARCHIVOS AL VAULT
+# ============================================
+
+@app.post("/api/vault/upload")
+async def upload_to_vault(file: UploadFile = File(...), topic: str = "general"):
+    """Sube un archivo al vault en raw/<topic>/. Auto-procesa a wiki."""
+    import shutil as shutil_mod
+
+    raw_path = Path(VAULT_PATH) / "raw" / topic
+    raw_path.mkdir(parents=True, exist_ok=True)
+
+    filename = file.filename or "unnamed"
+    safe_filename = "".join(c for c in filename if c.isalnum() or c in "._- ")
+    if not safe_filename:
+        safe_filename = "unnamed"
+
+    dest = raw_path / safe_filename
+    try:
+        with open(dest, "wb") as buffer:
+            shutil_mod.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error al subir archivo: {e}")
+
+    # ponytail: preview type for frontend (whatsapp-style)
+    ext = safe_filename.rsplit(".", 1)[-1].lower() if "." in safe_filename else ""
+    img_exts = {"png", "jpg", "jpeg", "gif", "webp", "bmp"}
+    audio_exts = {"mp3", "wav", "ogg", "m4a", "aac", "flac"}
+    video_exts = {"mp4", "webm", "mov", "avi", "mkv"}
+    preview_type = "image" if ext in img_exts else "audio" if ext in audio_exts else "video" if ext in video_exts else "document"
+
+    file_path = f"raw/{topic}/{safe_filename}"
+
+    # ponytail: auto-procesar a wiki en background (no bloquear el upload)
+    wiki_path = None
+    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
+    if api_key:
+        try:
+            client = get_docker_client()
+            vault_host = VAULT_PATH
+            if client:
+                try:
+                    bc = client.containers.get("cerebro-backend")
+                    vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
+                except Exception:
+                    pass
+
+            # 1. extraer texto
+            extract = subprocess.run(
+                ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
+                 "cerebrovirtual-herramientas:latest",
+                 "bash", "/app/scripts/process_raw.sh", f"/app/vault/{file_path}"],
+                capture_output=True, text=True, timeout=300
+            )
+            if extract.returncode == 0 and extract.stdout.strip():
+                extracted_text = extract.stdout.strip()
+                # filtrar logs del script
+                text_lines = extracted_text.split("\n")
+                content_start = 0
+                for i, line in enumerate(text_lines):
+                    if line.strip() == "---" or line.startswith("✅"):
+                        content_start = i + 1
+                extracted_text = "\n".join(text_lines[content_start:]).strip() or extracted_text
+
+                # 2. sintetizar wiki (lossless, multi-chunk)
+                stem = Path(safe_filename).stem
+                try:
+                    wiki_content = _synthesize_wiki(stem, extracted_text, api_key)
+                    wiki_file = Path(VAULT_PATH) / "wiki" / f"{stem}.md"
+                    wiki_file.parent.mkdir(parents=True, exist_ok=True)
+                    wiki_file.write_text(wiki_content, encoding="utf-8")
+                    wiki_path = f"wiki/{stem}.md"
+                except Exception as e:
+                    print(f"⚠️ Síntesis wiki falló: {e}")
+        except Exception as e:
+            print(f"⚠️ Auto-procesamiento falló: {e}")
+
+    return {
+        "success": True,
+        "message": f"Archivo subido: {safe_filename}" + (f" → wiki/{Path(safe_filename).stem}.md" if wiki_path else ""),
+        "path": file_path,
+        "filename": safe_filename,
+        "preview_type": preview_type,
+        "wiki_path": wiki_path,
+        "file_size": dest.stat().st_size
+    }
+
+
+@app.get("/api/vault/raw")
+async def list_raw_files():
+    """Lista los archivos en raw/."""
+    raw_path = Path(VAULT_PATH) / "raw"
+    files = []
+    if raw_path.exists():
+        for f in raw_path.rglob("*"):
+            if f.is_file() and ".processed" not in str(f) and f.name != ".gitkeep":
+                rel = f.relative_to(raw_path)
+                files.append({
+                    "name": f.name,
+                    "path": str(rel),
+                    "size": f.stat().st_size,
+                    "ext": f.suffix.lower().lstrip(".")
+                })
+    return {"files": files, "total": len(files)}
+
+
+# ponytail: helper compartido — borra raw/output + .txt + wiki derivada
+def _delete_vault_item(category: str, rel_path: str) -> dict:
+    """Borra raw/<rel> o outputs/<rel> + .txt hermano + wiki/<stem>.md."""
+    base = Path(VAULT_PATH) / category
+    target = (base / rel_path).resolve()
+    # evitar path traversal
+    if not str(target).startswith(str(base.resolve())):
+        raise HTTPException(status_code=400, detail="Path inválido")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+
+    stem = target.stem
+    deleted = [str(target.relative_to(VAULT_PATH))]
+    target.unlink(missing_ok=True)
+
+    # .txt de extracción (raw)
+    txt_sibling = target.with_suffix(".txt")
+    if txt_sibling.exists() and txt_sibling != target:
+        txt_sibling.unlink(missing_ok=True)
+        deleted.append(str(txt_sibling.relative_to(VAULT_PATH)))
+
+    # wiki derivada
+    wiki_file = Path(VAULT_PATH) / "wiki" / f"{stem}.md"
+    if wiki_file.exists():
+        wiki_file.unlink(missing_ok=True)
+        deleted.append(str(wiki_file.relative_to(VAULT_PATH)))
+
+    # ponytail: limpiar .processed si el directorio queda vacío
+    if target.parent.exists() and not any(target.parent.iterdir()):
+        target.parent.rmdir()
+
+    return {"deleted": deleted, "stem": stem}
+
+
+@app.get("/api/vault/outputs")
+async def list_outputs():
+    """Lista los archivos en outputs/."""
+    out_path = Path(VAULT_PATH) / "outputs"
+    files = []
+    if out_path.exists():
+        for f in out_path.rglob("*"):
+            if f.is_file() and f.name != ".gitkeep":
+                rel = f.relative_to(out_path)
+                files.append({
+                    "name": f.name,
+                    "path": str(rel),
+                    "size": f.stat().st_size,
+                    "ext": f.suffix.lower().lstrip(".")
+                })
+    return {"files": files, "total": len(files)}
+
+
+@app.post("/api/vault/batch-delete")
+async def batch_delete(items: list = Body(...)):
+    """Borra múltiples items. Cada item: {category, path}.
+    Devuelve {deleted: [...], errors: [...]}. Grafo se recalcula en frontend al refrescar."""
+    results = {"deleted": [], "errors": []}
+    for item in items:
+        cat = item.get("category", "")
+        p = item.get("path", "")
+        if cat not in ("raw", "outputs") or not p:
+            results["errors"].append({"path": p, "error": "item inválido"})
+            continue
+        try:
+            r = _delete_vault_item(cat, p)
+            results["deleted"].extend(r["deleted"])
+        except HTTPException as e:
+            results["errors"].append({"path": p, "error": e.detail})
+        except Exception as e:
+            results["errors"].append({"path": p, "error": str(e)})
+    return results
+
+
+@app.get("/api/wiki/graph")
+async def wiki_graph():
+    """Devuelve nodos y aristas del grafo de wikilinks de wiki/."""
+    import re
+    wiki_path = Path(VAULT_PATH) / "wiki"
+    nodes = []
+    edges = []
+    node_ids = set()
+
+    if not wiki_path.exists():
+        return {"nodes": [], "edges": []}
+
+    for md_file in wiki_path.glob("**/*.md"):
+        if md_file.name == "index.md":
+            continue
+        stem = md_file.stem
+        title = stem.replace("-", " ").title()
+        with open(md_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        for line in content.split("\n"):
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+
+        if stem not in node_ids:
+            nodes.append({"id": stem, "title": title, "path": str(md_file.relative_to(VAULT_PATH))})
+            node_ids.add(stem)
+
+        # ponytail: regex simple para [[wikilinks]]
+        links = re.findall(r'\[\[([^\]]+)\]\]', content)
+        for link in links:
+            target = link.strip().replace(" ", "-").lower()
+            if target and target not in node_ids:
+                nodes.append({"id": target, "title": link.strip(), "path": None})
+                node_ids.add(target)
+            edges.append({"source": stem, "target": target})
+
+    return {"nodes": nodes, "edges": edges}
+
+
+@app.post("/api/vault/process")
+async def process_raw_file(request: dict):
+    """Procesa un archivo de raw/ → texto extraído → página wiki via Sintetizador.
+
+    1. docker run --rm cerebro-herramientas process_raw.sh <file>  → .txt
+    2. docker exec cerebro-agente hermes chat -q "Sintetiza: <txt>"  → wiki page
+    3. Guarda resultado en wiki/<stem>.md
+    """
+    file_path = request.get("path", "")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="Falta 'path' del archivo")
+
+    raw_file = Path(VAULT_PATH) / file_path
+    if not raw_file.exists():
+        raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {file_path}")
+
+    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No hay API key configurada")
+
+    # ponytail: obtener host path del vault via Docker SDK (igual que start_agent_container)
+    client = get_docker_client()
+    vault_host = VAULT_PATH
+    if client:
+        try:
+            bc = client.containers.get("cerebro-backend")
+            vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
+        except Exception:
+            pass
+
+    # 1. Extraer texto con herramientas
+    try:
+        extract = subprocess.run(
+            ["docker", "run", "--rm",
+             "-v", f"{vault_host}:/app/vault",
+             "cerebrovirtual-herramientas:latest",
+             "bash", "/app/scripts/process_raw.sh", f"/app/vault/{file_path}"],
+            capture_output=True, text=True, timeout=300
+        )
+        if extract.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Error extrayendo: {extract.stderr[:300]}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Timeout extrayendo texto")
+
+    extracted_text = extract.stdout.strip()
+    if not extracted_text:
+        raise HTTPException(status_code=422, detail="No se pudo extraer texto del archivo")
+
+    # ponytail: filtrar líneas de log del script, quedarnos con el texto
+    # El script imprime logs + al final el contenido. Buscamos después del último "---"
+    text_lines = extracted_text.split("\n")
+    content_start = 0
+    for i, line in enumerate(text_lines):
+        if line.strip() == "---" or line.startswith("✅"):
+            content_start = i + 1
+    extracted_text = "\n".join(text_lines[content_start:]).strip() or extracted_text
+
+    # 2. Sintetizar página wiki (lossless, multi-chunk)
+    stem = raw_file.stem
+    try:
+        wiki_content = _synthesize_wiki(stem, extracted_text, api_key)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Timeout sintetizando wiki")
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # 3. Guardar en wiki/
+    wiki_path = Path(VAULT_PATH) / "wiki" / f"{stem}.md"
+    wiki_path.parent.mkdir(parents=True, exist_ok=True)
+    wiki_path.write_text(wiki_content, encoding="utf-8")
+
+    return {
+        "success": True,
+        "message": f"Página wiki creada: wiki/{stem}.md",
+        "wiki_path": f"wiki/{stem}.md",
+        "extracted_chars": len(extracted_text),
+        "wiki_chars": len(wiki_content)
+    }
+
+
+@app.post("/api/vault/process-folder")
+async def process_folder(request: dict):
+    """Procesa todos los archivos de raw/<topic>/ juntos con contexto compartido.
+
+    Cada archivo se extrae individualmente, luego Hermes recibe TODO el texto
+    junto con el nombre de la carpeta como tema, y genera páginas wiki enlazadas.
+    """
+    folder_path = request.get("path", "")
+    if not folder_path:
+        raise HTTPException(status_code=400, detail="Falta 'path' de la carpeta")
+
+    folder = Path(VAULT_PATH) / folder_path
+    if not folder.exists() or not folder.is_dir():
+        raise HTTPException(status_code=404, detail=f"Carpeta no encontrada: {folder_path}")
+
+    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No hay API key configurada")
+
+    # ponytail: obtener host path del vault
+    client = get_docker_client()
+    vault_host = VAULT_PATH
+    if client:
+        try:
+            bc = client.containers.get("cerebro-backend")
+            vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
+        except Exception:
+            pass
+
+    # 1. Extraer texto de cada archivo
+    topic = folder.name
+    files = [f for f in folder.iterdir() if f.is_file() and ".processed" not in str(f)]
+    if not files:
+        raise HTTPException(status_code=422, detail="La carpeta no tiene archivos")
+
+    extracted = []
+    for f in files:
+        rel = str(f.relative_to(VAULT_PATH))
+        try:
+            r = subprocess.run(
+                ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
+                 "cerebrovirtual-herramientas:latest",
+                 "bash", "/app/scripts/process_raw.sh", f"/app/vault/{rel}"],
+                capture_output=True, text=True, timeout=300
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                extracted.append({"name": f.stem, "text": r.stdout.strip()[-4000:]})
+        except Exception:
+            continue
+
+    if not extracted:
+        raise HTTPException(status_code=422, detail="No se pudo extraer texto de ningún archivo")
+
+    # 2. Sintetizar wiki con contexto compartido
+    combined = ""
+    for item in extracted:
+        combined += f"\n\n### Archivo: {item['name']}\n{item['text']}\n"
+
+    prompt = f"""Responde SOLO con Markdown. Sin preámbulos. Empieza con # Título.
+Crea un índice de tema con [[wikilinks]] a cada archivo. Cada archivo con sección ##, resumen, puntos clave, y [[wikilinks]] cruzados.
+Tema: {topic}
+Textos:{combined[:12000]}"""
+
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
+             "cerebro-agente", "/usr/local/lib/hermes-agent/venv/bin/hermes",
+             "chat", "-q", prompt],
+            capture_output=True, text=True, timeout=120
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Error Hermes: {result.stderr[:300]}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Timeout sintetizando wiki")
+
+    # 3. Parsear respuesta
+    output = result.stdout
+    lines = output.split("\n")
+    response_lines = []
+    in_response = False
+    for line in lines:
+        if "Hermes" in line and "─" in line:
+            in_response = True
+            continue
+        if in_response:
+            if line.startswith("Resume this session") or line.startswith("Session:"):
+                break
+            response_lines.append(line.strip(" ╭╮╰╯│─"))
+    while response_lines and not response_lines[-1]:
+        response_lines.pop()
+    wiki_content = "\n".join(response_lines).strip() or output.strip()
+
+    # 4. Guardar como wiki/<topic>.md
+    wiki_path = Path(VAULT_PATH) / "wiki" / f"{topic}.md"
+    wiki_path.parent.mkdir(parents=True, exist_ok=True)
+    wiki_path.write_text(wiki_content, encoding="utf-8")
+
+    return {
+        "success": True,
+        "message": f"Wiki creada: wiki/{topic}.md ({len(extracted)} archivos procesados)",
+        "wiki_path": f"wiki/{topic}.md",
+        "files_processed": len(extracted),
+        "wiki_chars": len(wiki_content)
+    }
+
+
+@app.get("/api/containers/status")
+async def containers_status():
+    """Devuelve el estado de todos los contenedores del sistema."""
+    client = get_docker_client()
+    if not client:
+        return {"error": "Docker no disponible"}
+
+    containers = {}
+    for name in ["cerebro-backend", "cerebro-frontend", "cerebro-agente", "cerebro-herramientas"]:
+        try:
+            c = client.containers.get(name)
+            c.reload()
+            containers[name] = {
+                "status": c.status,
+                "running": c.status == "running",
+                "ports": c.ports if hasattr(c, 'ports') else {}
+            }
+        except Exception:
+            containers[name] = {"status": "not_found", "running": False}
+
+    return {"containers": containers}

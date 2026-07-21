@@ -11,9 +11,9 @@ RUN apt-get update && apt-get install -y \
     python3-bcrypt \
     && rm -rf /var/lib/apt/lists/*
 
-# Configurar HERMES_HOME
+# Configurar HERMES_HOME y PATH (instalador pone hermes en /usr/local/lib)
 ENV HERMES_HOME=/app/hermes-home
-ENV PATH="${HERMES_HOME}/bin:${HERMES_HOME}/hermes-agent/venv/bin:${PATH}"
+ENV PATH="/usr/local/lib/hermes-agent/venv/bin:${HERMES_HOME}/bin:${PATH}"
 
 # Ejecutar el instalador oficial
 RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-venv --skip-setup
