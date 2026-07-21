@@ -1,6 +1,6 @@
 @echo off
+setlocal enabledelayedexpansion
 title Cerebro Virtual - Inicio
-chcp 65001 >nul 2>&1
 
 echo =========================================
 echo  CEREBRO VIRTUAL - INICIO
@@ -29,7 +29,7 @@ REM 2. VERIFICAR QUE DOCKER ESTE CORRIENDO
 REM -----------------------------------------------------------------
 echo [2/5] Verificando que Docker este en ejecucion...
 
-docker info >nul
+docker info >nul 2>&1
 if errorlevel 1 (
     echo.
     echo ADVERTENCIA: Docker no esta corriendo.
@@ -55,7 +55,7 @@ if errorlevel 1 (
     echo Esperando 30 segundos para que Docker arranque...
     timeout /t 30 /nobreak >nul
 
-    docker info >nul
+    docker info >nul 2>&1
     if errorlevel 1 (
         echo.
         echo ERROR: Docker no arranco despues de 30 segundos.
@@ -75,21 +75,25 @@ REM 3. VERIFICAR DOCKER COMPOSE
 REM -----------------------------------------------------------------
 echo [3/5] Verificando Docker Compose...
 
+set "COMPOSE_CMD="
+
 docker compose version >nul 2>&1
-if errorlevel 1 (
-    where docker-compose >nul 2>&1
-    if errorlevel 1 (
-        echo.
-        echo ERROR: Docker Compose no esta instalado.
-        echo Viene incluido con Docker Desktop, reinstalalo si es necesario.
-        echo.
-        pause
-        exit /b 1
-    ) else (
-        set COMPOSE_CMD=docker-compose
-    )
+if !errorlevel! equ 0 (
+    set "COMPOSE_CMD=docker compose"
 ) else (
-    set COMPOSE_CMD=docker compose
+    where docker-compose >nul 2>&1
+    if !errorlevel! equ 0 (
+        set "COMPOSE_CMD=docker-compose"
+    )
+)
+
+if not defined COMPOSE_CMD (
+    echo.
+    echo ERROR: Docker Compose no esta instalado.
+    echo Viene incluido con Docker Desktop, reinstalalo si es necesario.
+    echo.
+    pause
+    exit /b 1
 )
 echo OK: Docker Compose instalado.
 echo.
@@ -132,11 +136,11 @@ echo Construyendo y levantando el sistema...
 echo (Esto puede tomar varios minutos la primera vez)
 echo.
 
-%COMPOSE_CMD% up -d --build
-if errorlevel 1 (
+!COMPOSE_CMD! --profile agent --profile tools up -d --build
+if !errorlevel! neq 0 (
     echo.
     echo ERROR: No se pudo iniciar el sistema con Docker Compose.
-    echo Revisa los logs con: %COMPOSE_CMD% logs -f
+    echo Revisa los logs con: !COMPOSE_CMD! logs -f
     echo.
     pause
     exit /b 1
@@ -164,12 +168,11 @@ echo   - Indexador (indice global)
 echo   - Sintetizador (procesa raw/ a wiki/)
 echo.
 echo Comandos utiles:
-echo   Ver logs:      %COMPOSE_CMD% logs -f
-echo   Parar sistema: %COMPOSE_CMD% down
-echo   Reiniciar:     %COMPOSE_CMD% restart
-echo.
-echo Si seleccionaste modelos locales (Ollama), el agente
-echo arrancara el contenedor de Ollama automaticamente.
+echo   Ver logs:      !COMPOSE_CMD! logs -f
+echo   Parar sistema: !COMPOSE_CMD! down
+echo   Reiniciar:     !COMPOSE_CMD! restart
 echo.
 echo Presione una tecla para continuar . . .
 pause >nul
+
+endlocal

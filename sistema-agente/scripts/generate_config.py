@@ -41,9 +41,8 @@ def main():
     agent_name = config.get("agentName", "Hermes")
     personality = config.get("personality", "Eres un asistente útil y amigable.")
     api_key = config.get("apiKey", "")
-    model_mode = config.get("modelMode", "openrouter")
-    hw_profile = config.get("hwProfile", "medium")
     channels = config.get("channels", {}) or {}
+    channel_tokens = config.get("channelTokens", {}) or {}
     dashboard = config.get("dashboard", {}) or {}
     dashboard_user = (dashboard.get("user") or "").strip()
     dashboard_password = dashboard.get("password") or ""
@@ -60,14 +59,10 @@ def main():
 
     if dashboard_user and dashboard_password:
         password_hash = hash_password(dashboard_password)
-        # Keep both config shapes because Hermes dashboard/auth config changed
-        # across versions. This lets the same generated file work with either.
         dashboard_config["basic_auth"] = {
             "enabled": True,
-            # Shape required by Hermes dashboard auth gate.
             "username": dashboard_user,
             "password_hash": password_hash,
-            # Compatibility shapes for older/alternate code paths.
             "users": [
                 {
                     "username": dashboard_user,
@@ -83,28 +78,16 @@ def main():
             "users": {dashboard_user: password_hash},
         }
 
-    # Build LLM config based on model mode
-    if model_mode == "local":
-        llm_config = {
-            "provider": "ollama",
-            "base_url": "http://cerebro-ollama:11434",
-        }
-        legacy_llm_config = {
-            "provider": "ollama",
-            "base_url": "http://cerebro-ollama:11434",
-            "model": "qwen2.5:3b",
-        }
-    else:
-        llm_config = {
-            "provider": "openrouter",
-            "default": "openai/gpt-4o-mini",
-            "api_key": api_key,
-        }
-        legacy_llm_config = {
-            "provider": "openrouter",
-            "api_key": api_key,
-            "model": "openai/gpt-4o-mini",
-        }
+    llm_config = {
+        "provider": "openrouter",
+        "default": "openai/gpt-4o-mini",
+        "api_key": api_key,
+    }
+    legacy_llm_config = {
+        "provider": "openrouter",
+        "api_key": api_key,
+        "model": "openai/gpt-4o-mini",
+    }
 
     hermes_config = {
         "agent": {
@@ -112,19 +95,21 @@ def main():
             "personality": personality,
         },
         "model": llm_config,
-        # Legacy shape kept for older code paths in this project.
         "llm": legacy_llm_config,
         "channels": {
             "web": {"enabled": True, "port": 8080},
             "telegram": {
                 "enabled": bool(channels.get("telegram", False)),
-                "token": os.getenv("TELEGRAM_TOKEN", ""),
+                "token": channel_tokens.get("telegram", "") or os.getenv("TELEGRAM_TOKEN", ""),
             },
             "discord": {
                 "enabled": bool(channels.get("discord", False)),
-                "token": os.getenv("DISCORD_TOKEN", ""),
+                "token": channel_tokens.get("discord", "") or os.getenv("DISCORD_TOKEN", ""),
             },
-            "whatsapp": {"enabled": bool(channels.get("whatsapp", False))},
+            "whatsapp": {
+                "enabled": bool(channels.get("whatsapp", False)),
+                "phone": channel_tokens.get("whatsapp", ""),
+            },
         },
         "vault": {"path": "/app/vault", "obsidian": True},
         "paths": {"data": "/root/.hermes/data", "skills": "/root/.hermes/skills"},

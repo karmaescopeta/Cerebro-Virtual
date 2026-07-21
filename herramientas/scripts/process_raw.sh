@@ -20,7 +20,7 @@ fi
 
 BASENAME=$(basename "$INPUT")
 EXT="${BASENAME##*.}"
-EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]']")
+EXT_LOWER=$(echo "$EXT" | tr '[:upper:]' '[:lower:]')
 DIR=$(dirname "$INPUT")
 STEM="${BASENAME%.*}"
 OUTPUT="$DIR/${STEM}.txt"
