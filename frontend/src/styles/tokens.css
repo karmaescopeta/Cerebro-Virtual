@@ -1,0 +1,61 @@
+/* === Obsidian Deep — Design Tokens === */
+/* Único punto de cambio de paleta/fuentes. Cambia aquí → se actualiza toda la web. */
+
+:root {
+  /* --- Surfaces (fondo escalonado) --- */
+  --color-bg: #0e0e0e;
+  --color-surface: #1c1b1b;
+  --color-surface-container: #201f1f;
+  --color-surface-high: #2a2a2a;
+  --color-surface-highest: #353534;
+
+  /* --- Borders --- */
+  --color-border: #424754;
+  --color-border-variant: #8c909f;
+
+  /* --- Text --- */
+  --color-text-primary: #e5e2e1;
+  --color-text-secondary: #c2c6d6;
+  --color-text-tertiary: #8c909f;
+
+  /* --- Primary (acento) --- */
+  --color-primary: #adc6ff;
+  --color-primary-container: #4d8eff;
+  --color-on-primary: #002e6a;
+  --color-primary-glow: rgba(173, 198, 255, 0.3);
+
+  /* --- Status --- */
+  --color-success: #4edea3;
+  --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+
+  /* --- Fonts --- */
+  --font-display: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* --- Spacing (8px base) --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 40px;
+  --space-8: 48px;
+
+  /* --- Radios --- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 9999px;
+
+  /* --- Transitions --- */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.25s ease;
+  --transition-slow: 0.4s ease;
+
+  /* --- Shadows --- */
+  --shadow-glow: 0 0 15px var(--color-primary-glow);
+  --shadow-card: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
