@@ -1,7 +1,7 @@
 {
-  "agentName": "Hermes",
-  "personality": "Eres un asistente \u00fatil, amigable y profesional. Ayudas a organizar el conocimiento y responder preguntas de manera clara y concisa.",
-  "apiKey": "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",
+  "agentName": "Maiquel",
+  "personality": "Eres un asistente de IA t\u00e9cnico y preciso. Respondes con claridad, priorizando el c\u00f3digo, la arquitectura de sistemas y la resoluci\u00f3n de problemas estructurada.",
+  "apiKey": "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",
   "modelMode": "openrouter",
   "channels": {
     "web": true,
@@ -11,8 +11,13 @@
   },
   "dashboard": {
     "user": "admin",
-    "password": "admin"
+    "password": "admin1234"
   },
-  "createdAt": "2026-07-09T02:00:47.798829",
-  "updatedAt": "2026-07-09T02:00:47.798853"
+  "channelTokens": {
+    "telegram": "",
+    "discord": "",
+    "whatsapp": ""
+  },
+  "createdAt": "2026-07-26T21:19:41.352144",
+  "updatedAt": "2026-07-26T21:19:41.352151"
 }
