@@ -47,6 +47,7 @@ function App() {
   const [systemInfo, setSystemInfo] = useState(null)
   const [containers, setContainers] = useState(null)
   const [wikiGraph, setWikiGraph] = useState({ nodes: [], edges: [] })
+  const [projects, setProjects] = useState([])
 
   // Cerebro
   const [cerebroSubtab, setCerebroSubtab] = useState('raw')
@@ -73,7 +74,7 @@ function App() {
       setIsConfigured(data.configured)
       if (data.configured) {
         await startAgent()
-        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph()])
+        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects()])
       }
       setLoading(false)
     } catch { setLoading(false) }
@@ -115,6 +116,10 @@ function App() {
     try { const res = await fetch('/api/wiki/graph'); if (res.ok) setWikiGraph(await res.json()) } catch {}
   }
 
+  async function loadProjects() {
+    try { const res = await fetch('/api/projects'); if (res.ok) setProjects((await res.json()).projects || []) } catch {}
+  }
+
   async function loadCerebroFiles() {
     try {
       const [r, o] = await Promise.all([fetch('/api/vault/raw'), fetch('/api/vault/outputs')])
@@ -139,19 +144,18 @@ function App() {
     try {
       if (await startAgent()) {
         setIsConfigured(true)
-        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph()])
+        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects()])
       }
     } finally { setAgentStarting(false) }
   }
 
   // === Chat ===
   async function handleUploadChatFile(file) {
-    const ext = file.name.split('.').pop().toLowerCase()
-    if (!['pdf','png','jpg','jpeg','gif','webp','txt','md','markdown','mp3','wav','ogg','m4a','mp4','webm','mov','csv','json','yaml','yml'].includes(ext)) { alert('Tipo no soportado'); return }
+    // ponytail: sin filtro de extensiones — aceptar cualquier archivo
     setChatUploading(true)
     try {
       const fd = new FormData(); fd.append('file', file)
-      const d = await (await fetch('/api/vault/upload?topic=chat', { method: 'POST', body: fd })).json()
+      const d = await (await fetch('/api/vault/upload?project=individual', { method: 'POST', body: fd })).json()
       if (d.success || d.path || d.name) {
         const fn = d.name || file.name
         setChatAttachedFile({ name: fn, path: `raw/chat/${fn}`, preview_type: d.preview_type || 'document', wiki_path: d.wiki_path, size: d.file_size, local_url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null })
@@ -165,7 +169,7 @@ function App() {
     setChatLoading(true)
     let msg = chatMessage
     if (chatAttachedFile) {
-      const note = `El usuario ha subido el archivo «${chatAttachedFile.name}» que ya está guardado en raw/chat/${chatAttachedFile.name}. Procésalo si es necesario.`
+      const note = `El usuario ha subido el archivo «${chatAttachedFile.name}» que ya está guardado en raw/individual/${chatAttachedFile.name}. Procésalo si es necesario.`
       msg = msg ? `${msg}\n\n${note}` : note
     }
     setChatMessages(p => [...p, { role: 'user', content: msg, attachment: chatAttachedFile }])
@@ -265,7 +269,7 @@ function App() {
   // === Drag-drop ===
   const handleChatDragOver = (e) => { e.preventDefault(); setChatDragOver(true) }
   const handleChatDragLeave = (e) => { e.preventDefault(); setChatDragOver(false) }
-  const handleChatDrop = (e) => { e.preventDefault(); setChatDragOver(false); if (e.dataTransfer.files?.length) handleUploadChatFile(e.dataTransfer.files[0]) }
+  const handleChatDrop = (e) => { e.preventDefault(); setChatDragOver(false); if (e.dataTransfer.files?.length) { Array.from(e.dataTransfer.files).forEach(f => handleUploadChatFile(f)) } }
 
   // === Render ===
   if (agentStarting) {
@@ -299,14 +303,15 @@ function App() {
             chatUploading={chatUploading} chatAttachedFile={chatAttachedFile} chatDragOver={chatDragOver}
             setChatMessage={setChatMessage} setChatAttachedFile={setChatAttachedFile}
             onSend={handleSendChat} onUploadFile={handleUploadChatFile}
-            onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop} fileInputRef={fileInputRef} />
+            onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop} fileInputRef={fileInputRef}
+            onRefreshGraph={loadWikiGraph} onReloadProjects={loadProjects} projects={projects} />
         )}
         {activeTab === 'cerebro' && (
           <CerebroView subtab={cerebroSubtab} setSubtab={setCerebroSubtab} rawFiles={rawFiles} outputFiles={outputFiles}
             search={cerebroSearch} setSearch={setCerebroSearch} selected={cerebroSelected} setSelected={setCerebroSelected}
-            onDelete={handleCerebroDelete} deleting={cerebroDeleting} />
+            onDelete={handleCerebroDelete} deleting={cerebroDeleting} onReloadRaw={loadCerebroFiles} onRefreshGraph={loadWikiGraph} onReloadProjects={loadProjects} />
         )}
-        {activeTab === 'graph' && <GrafoView nodes={wikiGraph.nodes || []} edges={wikiGraph.edges || []} />}
+        {activeTab === 'graph' && <GrafoView nodes={wikiGraph.nodes || []} edges={wikiGraph.edges || []} refreshKey={wikiGraph} projects={projects} />}
         {activeTab === 'settings' && (
           <AjustesView editAgentName={editAgentName} editPersonality={editPersonality} editingAgent={editingAgent}
             editSaving={editSaving} editMessage={editMessage} editMessageType={editMessageType} restarting={restarting}

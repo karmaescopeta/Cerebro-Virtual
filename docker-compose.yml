@@ -61,6 +61,12 @@ services:
     restart: "no"
     volumes:
       - ./vault:/app/vault
+    environment:
+      # ponytail: Graphify Pass 3 usa OpenRouter como backend OpenAI-compatible.
+      # La key NUNCA se hardcodea — se lee del .env del host via ${VAR}.
+      - OPENAI_BASE_URL=https://openrouter.ai/api/v1
+      - OPENAI_API_KEY=${OPENROUTER_API_KEY}
+      - GRAPHIFY_OPENAI_MODEL=google/gemma-4-26b-a4b-it:free
     networks:
       - cerebro-network
     profiles:
