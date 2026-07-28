@@ -253,9 +253,10 @@ async def vault_status():
         with open(identity_path, "r") as f:
             identity = json.load(f)
     # New vault structure: raw/, wiki/, outputs/
-    wiki_count = len(list(Path(VAULT_PATH).glob("wiki/**/*.md")))
-    raw_files = len(list(Path(VAULT_PATH).glob("raw/**/*"))) - len(list(Path(VAULT_PATH).glob("raw/.processed/**/*")))
-    outputs_count = len(list(Path(VAULT_PATH).glob("outputs/**/*")))
+    # ponytail: contar solo archivos reales (no dirs, no .gitkeep, no .processed)
+    wiki_count = len([f for f in Path(VAULT_PATH).glob("wiki/**/*.md") if f.is_file() and f.name != ".gitkeep"])
+    raw_files = len([f for f in Path(VAULT_PATH).glob("raw/**/*") if f.is_file() and f.name != ".gitkeep" and ".processed" not in str(f)])
+    outputs_count = len([f for f in Path(VAULT_PATH).glob("outputs/**/*") if f.is_file() and f.name != ".gitkeep"])
     return {
         "manifest": manifest,
         "identity": identity,
@@ -378,6 +379,203 @@ async def delete_hermes_key():
 def _normalize(s: str) -> str:
     """Quita acentos y lowercase para comparación tolerante."""
     return s.lower().translate(str.maketrans("áéíóúüñ", "aeiouun"))
+
+# ponytail: Graphify helpers — grafo "Neuronas" coexiste con grafo "Estructura" (wikilinks)
+GRAPH_PATH = Path(VAULT_PATH) / "system" / "graph.json"
+
+# Extensión que Graphify procesa (Pass 1 código + Pass 3 docs). Audio/video se queda en Whisper.
+GRAPHIFY_EXTS = {".py",".js",".cjs",".ts",".tsx",".jsx",".go",".rs",".java",".rb",".c",".h",".cpp",".hpp",".cc",".cs",".kt",".swift",".php",".scala",".lua",".sh",".md",".rst",".txt",".mdx",".pdf",".png",".jpg",".jpeg",".gif",".webp",".bmp",".csv",".json",".yaml",".yml",".html",".htm",".xml",".sql"}
+
+def _run_graphify(file_abs_path: str, vault_host: str) -> dict | None:
+    """Ejecuta Graphify sobre el directorio del archivo. Output a vault/system/graphify-tmp/graphify-out/graph.json.
+    ponytail: Graphify espera un directorio, no un archivo individual."""
+    out_subdir = "system/graphify-tmp"
+    out_abs = f"/app/vault/{out_subdir}"
+    # ponytail: Graphify escanea directorios, no archivos. Pasar el dir del archivo.
+    import os as _os
+    input_dir = _os.path.dirname(file_abs_path) or file_abs_path
+    try:
+        # ponytail: pasar env vars al contenedor efímero — Graphify necesita OPENAI_API_KEY
+        env_vars = ["-e", f"OPENAI_API_KEY={OPENROUTER_API_KEY or get_agent_key('hermes') or ''}",
+                    "-e", "OPENAI_BASE_URL=https://openrouter.ai/api/v1",
+                    "-e", "GRAPHIFY_OPENAI_MODEL=google/gemma-4-26b-a4b-it:free",
+                    "-e", "GRAPHIFY_FORCE=1"]
+        result = subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
+             *env_vars,
+             "cerebrovirtual-herramientas:latest",
+             "bash", "/app/scripts/run_graphify.sh", input_dir, out_abs],
+            capture_output=True, text=True, timeout=180
+        )
+        if result.returncode != 0:
+            print(f"⚠️ Graphify falló: {result.stderr[:300]}")
+            return None
+        # ponytail: Graphify escribe a <out_dir>/graphify-out/graph.json (siempre crea subdirectorio)
+        graph_file = Path(VAULT_PATH) / out_subdir / "graphify-out" / "graph.json"
+        if not graph_file.exists():
+            print("⚠️ Graphify no generó graph.json")
+            return None
+        with open(graph_file) as f:
+            partial = json.load(f)
+        # limpiar tmp
+        import shutil
+        shutil.rmtree(Path(VAULT_PATH) / out_subdir / "graphify-out", ignore_errors=True)
+        return partial
+    except Exception as e:
+        print(f"⚠️ Graphify error: {e}")
+        return None
+
+def _merge_graph(partial: dict, source_file: str) -> None:
+    """Merge graph parcial de Graphify con graph.json global del vault."""
+    if not partial or "nodes" not in partial:
+        return
+    # ponytail: cargar graph global, añadir source_file a cada nodo, merge, guardar
+    existing = {"nodes": [], "edges": []}
+    if GRAPH_PATH.exists():
+        try:
+            with open(GRAPH_PATH) as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+
+    # tag nodos con source_file
+    for n in partial.get("nodes", []):
+        if "source_file" not in n:
+            n["source_file"] = source_file
+
+    # ponytail: dedup por id — si un nodo con mismo id+source_file ya existe, reemplazar
+    existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
+    new_nodes = [n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids]
+    existing["nodes"].extend(new_nodes)
+
+    # edges: dedup por (source, target, relation)
+    existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
+    new_edges = [e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges]
+    existing["edges"].extend(new_edges)
+
+    GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(GRAPH_PATH, "w") as f:
+        json.dump(existing, f, ensure_ascii=False)
+
+def _prune_graph_json(source_file: str) -> None:
+    """Elimina nodos/edges de un archivo borrado del graph.json global."""
+    # ponytail: O(n) scan, suficiente hasta miles de nodos
+    if not GRAPH_PATH.exists():
+        return
+    try:
+        with open(GRAPH_PATH) as f:
+            graph = json.load(f)
+        before = len(graph.get("nodes", []))
+        graph["nodes"] = [n for n in graph.get("nodes", []) if n.get("source_file") != source_file]
+        valid_ids = {n["id"] for n in graph["nodes"]}
+        graph["edges"] = [e for e in graph.get("edges", [])
+                          if e.get("source") in valid_ids and e.get("target") in valid_ids]
+        with open(GRAPH_PATH, "w") as f:
+            json.dump(graph, f, ensure_ascii=False)
+        pruned = before - len(graph["nodes"])
+        if pruned:
+            print(f"🧹 Graphify: pruned {pruned} nodes for {source_file}")
+    except Exception as e:
+        print(f"⚠️ _prune_graph_json error: {e}")
+
+def _sync_graph_json() -> None:
+    """Elimina nodos de graph.json cuyo source_file ya no existe en raw/."""
+    # ponytail: O(n) scan — called at startup + GET /api/graph/full
+    if not GRAPH_PATH.exists():
+        return
+    try:
+        with open(GRAPH_PATH) as f:
+            graph = json.load(f)
+        raw_path = Path(VAULT_PATH) / "raw"
+        existing_files = set()
+        if raw_path.exists():
+            for f_ in raw_path.rglob("*"):
+                if f_.is_file() and f_.name != ".gitkeep" and ".processed" not in str(f_):
+                    existing_files.add(f_.name)
+        before = len(graph.get("nodes", []))
+        graph["nodes"] = [n for n in graph.get("nodes", [])
+                          if n.get("source_file") in existing_files or not n.get("source_file")]
+        valid_ids = {n["id"] for n in graph["nodes"]}
+        graph["edges"] = [e for e in graph.get("edges", [])
+                          if e.get("source") in valid_ids and e.get("target") in valid_ids]
+        with open(GRAPH_PATH, "w") as f:
+            json.dump(graph, f, ensure_ascii=False)
+        pruned = before - len(graph["nodes"])
+        if pruned:
+            print(f"🧹 Graphify: synced (pruned {pruned} orphan nodes)")
+    except Exception as e:
+        print(f"⚠️ _sync_graph_json error: {e}")
+
+def _graphify_file_path(file_path: str) -> str:
+    """Construye el path absoluto dentro del contenedor para un archivo del vault."""
+    return f"/app/vault/{file_path}"
+
+def search_graph(query: str, limit: int = 10) -> dict:
+    """Busca nodos en graph.json por label → devuelve nodos + edges adyacentes."""
+    if not GRAPH_PATH.exists():
+        return {"nodes": [], "edges": []}
+    try:
+        with open(GRAPH_PATH) as f:
+            graph = json.load(f)
+    except Exception:
+        return {"nodes": [], "edges": []}
+
+    q = _normalize(query)
+    if not q:
+        return {"nodes": [], "edges": []}
+
+    # ponytail: scoring simple por coincidencia de palabras en label
+    import re
+    words = [w for w in re.split(r'\W+', q) if len(w) >= 3]
+    if not words:
+        words = [q]
+
+    scored = []
+    for n in graph.get("nodes", []):
+        label = _normalize(n.get("label", ""))
+        s = sum(1 for w in words if w in label)
+        if s > 0:
+            scored.append((s, n))
+    scored.sort(key=lambda x: -x[0])
+    matched_nodes = [n for _, n in scored[:limit]]
+    matched_ids = {n["id"] for n in matched_nodes}
+
+    # edges adyacentes a los nodos matcheados
+    adj_edges = [e for e in graph.get("edges", [])
+                 if e.get("source") in matched_ids or e.get("target") in matched_ids]
+
+    # nodos conectados via esos edges (para dar contexto)
+    adj_node_ids = set()
+    for e in adj_edges:
+        adj_node_ids.add(e.get("source"))
+        adj_node_ids.add(e.get("target"))
+    adj_node_ids -= matched_ids
+    extra_nodes = [n for n in graph.get("nodes", []) if n["id"] in adj_node_ids]
+
+    return {"nodes": matched_nodes + extra_nodes, "edges": adj_edges}
+
+# ponytail: sistema de proyectos — vault/system/projects.json
+PROJECTS_PATH = Path(VAULT_PATH) / "system" / "projects.json"
+
+def _load_projects() -> dict:
+    if not PROJECTS_PATH.exists():
+        return {"projects": []}
+    try:
+        with open(PROJECTS_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"projects": []}
+
+def _save_projects(data: dict) -> None:
+    PROJECTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PROJECTS_PATH, "w") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def _slugify(name: str) -> str:
+    # ponytail: stdlib slug, no python-slugify
+    import re, uuid
+    slug = re.sub(r'[^a-z0-9]+', '-', name.lower().strip()).strip('-')
+    return slug or f"proyecto-{uuid.uuid4().hex[:8]}"
 
 def search_vault(query: str, limit: int = 5):
     """Search wiki/ then raw/ by palabras clave. Acento-insensible."""
@@ -527,9 +725,27 @@ async def chat(message: dict):
             context_text += f"\n**{i}. {r['title']}** ({r['path']})\n{r['content']}...\n"
         context_text += "---\n"
 
+    # ponytail: Graph RAG — buscar nodos en graph.json (grafo "Neuronas")
+    graph_results = search_graph(user_message, limit=5)
+    graph_context = ""
+    if graph_results["nodes"]:
+        graph_context = "\n\n---\n**Grafo de conocimiento:**\n"
+        for n in graph_results["nodes"]:
+            label = n.get("label", n.get("id", ""))
+            sf = n.get("source_file", "")
+            conf = n.get("confidence", "")
+            graph_context += f"- {label}" + (f" ({sf})" if sf else "") + (f" [{conf}]" if conf else "") + "\n"
+        if graph_results["edges"]:
+            graph_context += "Relaciones:\n"
+            for e in graph_results["edges"][:15]:
+                rel = e.get("relation", "rel")
+                graph_context += f"  {e.get('source','?')} --{rel}--> {e.get('target','?')}\n"
+        graph_context += "---\n"
+
     # ponytail: sesión persistente via --continue (recuerda mensajes previos del mismo proceso)
     HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
-    full_message = f"{context_text}\n\nPregunta: {user_message}" if context_text else user_message
+    combined_context = context_text + graph_context
+    full_message = f"{combined_context}\n\nPregunta: {user_message}" if combined_context.strip() else user_message
 
     try:
         result = subprocess.run(
@@ -575,6 +791,7 @@ async def chat(message: dict):
                 "model": "openai/gpt-4o-mini",
                 "via": "hermes-coordinador",
                 "vault_results": len(search_results),
+                "graph_results": len(graph_results.get("nodes", [])),
                 "timestamp": datetime.now().isoformat()
             }
         }
@@ -1045,11 +1262,14 @@ async def import_vault(file: bytes = File(...)):
 # ============================================
 
 @app.post("/api/vault/upload")
-async def upload_to_vault(file: UploadFile = File(...), topic: str = "general"):
-    """Sube un archivo al vault en raw/<topic>/. Auto-procesa a wiki."""
+async def upload_to_vault(file: UploadFile = File(...), project: str = "individual", topic: str = None):
+    """Sube un archivo al vault en raw/<project>/. Auto-procesa a wiki + Graphify.
+    Compat: si llega ?topic y no ?project, usar topic como project."""
+    # ponytail: project gana sobre topic (compat hacia atrás)
+    dest_folder = project or topic or "individual"
     import shutil as shutil_mod
 
-    raw_path = Path(VAULT_PATH) / "raw" / topic
+    raw_path = Path(VAULT_PATH) / "raw" / dest_folder
     raw_path.mkdir(parents=True, exist_ok=True)
 
     filename = file.filename or "unnamed"
@@ -1071,7 +1291,7 @@ async def upload_to_vault(file: UploadFile = File(...), topic: str = "general"):
     video_exts = {"mp4", "webm", "mov", "avi", "mkv"}
     preview_type = "image" if ext in img_exts else "audio" if ext in audio_exts else "video" if ext in video_exts else "document"
 
-    file_path = f"raw/{topic}/{safe_filename}"
+    file_path = f"raw/{dest_folder}/{safe_filename}"
 
     # ponytail: auto-procesar a wiki en background (no bloquear el upload)
     wiki_path = None
@@ -1094,6 +1314,17 @@ async def upload_to_vault(file: UploadFile = File(...), topic: str = "general"):
                  "bash", "/app/scripts/process_raw.sh", f"/app/vault/{file_path}"],
                 capture_output=True, text=True, timeout=300
             )
+
+            # ponytail: Graphify — procesa el archivo original directamente (no necesita texto extraído)
+            file_ext = Path(safe_filename).suffix.lower()
+            if file_ext in GRAPHIFY_EXTS:
+                try:
+                    partial = _run_graphify(f"/app/vault/{file_path}", vault_host)
+                    if partial:
+                        _merge_graph(partial, safe_filename)
+                except Exception as e:
+                    print(f"⚠️ Graphify falló para {safe_filename}: {e}")
+
             if extract.returncode == 0 and extract.stdout.strip():
                 extracted_text = extract.stdout.strip()
                 # filtrar logs del script
@@ -1130,18 +1361,24 @@ async def upload_to_vault(file: UploadFile = File(...), topic: str = "general"):
 
 @app.get("/api/vault/raw")
 async def list_raw_files():
-    """Lista los archivos en raw/."""
+    """Lista archivos Y carpetas de proyecto en raw/."""
     raw_path = Path(VAULT_PATH) / "raw"
     files = []
     if raw_path.exists():
         for f in raw_path.rglob("*"):
-            if f.is_file() and ".processed" not in str(f) and f.name != ".gitkeep":
-                rel = f.relative_to(raw_path)
+            if ".processed" in str(f) or f.name == ".gitkeep":
+                continue
+            rel = f.relative_to(raw_path)
+            if f.is_file():
                 files.append({
-                    "name": f.name,
-                    "path": str(rel),
-                    "size": f.stat().st_size,
-                    "ext": f.suffix.lower().lstrip(".")
+                    "name": f.name, "path": str(rel),
+                    "size": f.stat().st_size, "ext": f.suffix.lower().lstrip(".")
+                })
+            elif f.is_dir():
+                # ponytail: incluir carpetas de proyecto vacías — el frontend las agrupa
+                files.append({
+                    "name": f.name, "path": str(rel) + "/",
+                    "size": 0, "ext": "folder"
                 })
     return {"files": files, "total": len(files)}
 
@@ -1172,6 +1409,9 @@ def _delete_vault_item(category: str, rel_path: str) -> dict:
     if wiki_file.exists():
         wiki_file.unlink(missing_ok=True)
         deleted.append(str(wiki_file.relative_to(VAULT_PATH)))
+
+    # ponytail: limpiar graph.json de nodos del archivo borrado
+    _prune_graph_json(target.name)
 
     # ponytail: limpiar .processed si el directorio queda vacío
     if target.parent.exists() and not any(target.parent.iterdir()):
@@ -1221,42 +1461,160 @@ async def batch_delete(items: list = Body(...)):
 
 @app.get("/api/wiki/graph")
 async def wiki_graph():
-    """Devuelve nodos y aristas del grafo de wikilinks de wiki/."""
+    """Grafo Estructura: proyectos como nodos principales + páginas wiki + wikilinks.
+    Cada proyecto conecta a sus archivos wiki con el color del proyecto."""
     import re
     wiki_path = Path(VAULT_PATH) / "wiki"
     nodes = []
     edges = []
     node_ids = set()
 
-    if not wiki_path.exists():
-        return {"nodes": [], "edges": []}
+    # ponytail: nodos de proyecto desde projects.json — son los nodos principales
+    projects = _load_projects().get("projects", [])
+    # mapear stem de wiki → proyecto por carpeta raw/<project_id>/
+    project_of_file = {}
+    raw_path = Path(VAULT_PATH) / "raw"
+    if raw_path.exists():
+        for proj in projects:
+            proj_dir = raw_path / proj["id"]
+            if proj_dir.exists():
+                for f in proj_dir.iterdir():
+                    if f.is_file() and f.name != ".gitkeep":
+                        project_of_file[f.stem] = proj
 
-    for md_file in wiki_path.glob("**/*.md"):
-        if md_file.name == "index.md":
-            continue
-        stem = md_file.stem
-        title = stem.replace("-", " ").title()
-        with open(md_file, "r", encoding="utf-8") as f:
-            content = f.read()
-        for line in content.split("\n"):
-            if line.startswith("# "):
-                title = line[2:].strip()
-                break
+    for proj in projects:
+        pid = proj["id"]
+        if pid not in node_ids:
+            nodes.append({"id": pid, "title": proj.get("name", pid), "path": None,
+                           "type": "project", "color": proj.get("color", "#4edea3")})
+            node_ids.add(pid)
 
-        if stem not in node_ids:
-            nodes.append({"id": stem, "title": title, "path": str(md_file.relative_to(VAULT_PATH))})
-            node_ids.add(stem)
+    if wiki_path.exists():
+        for md_file in wiki_path.glob("**/*.md"):
+            if md_file.name == "index.md":
+                continue
+            stem = md_file.stem
+            title = stem.replace("-", " ").title()
+            with open(md_file, "r", encoding="utf-8") as f:
+                content = f.read()
+            for line in content.split("\n"):
+                if line.startswith("# "):
+                    title = line[2:].strip()
+                    break
 
-        # ponytail: regex simple para [[wikilinks]]
-        links = re.findall(r'\[\[([^\]]+)\]\]', content)
-        for link in links:
-            target = link.strip().replace(" ", "-").lower()
-            if target and target not in node_ids:
-                nodes.append({"id": target, "title": link.strip(), "path": None})
-                node_ids.add(target)
-            edges.append({"source": stem, "target": target})
+            if stem not in node_ids:
+                nodes.append({"id": stem, "title": title, "path": str(md_file.relative_to(VAULT_PATH))})
+                node_ids.add(stem)
+
+            # ponytail: edge proyecto → archivo, con color del proyecto
+            if stem in project_of_file:
+                proj = project_of_file[stem]
+                edges.append({"source": proj["id"], "target": stem, "color": proj.get("color", "#4edea3")})
+
+            # ponytail: regex simple para [[wikilinks]]
+            links = re.findall(r'\[\[([^\]]+)\]\]', content)
+            for link in links:
+                target = link.strip().replace(" ", "-").lower()
+                if target and target not in node_ids:
+                    nodes.append({"id": target, "title": link.strip(), "path": None})
+                    node_ids.add(target)
+                edges.append({"source": stem, "target": target})
 
     return {"nodes": nodes, "edges": edges}
+
+
+@app.get("/api/graph/full")
+async def get_full_graph():
+    """Devuelve vault/system/graph.json completo (grafo 'Neuronas' de Graphify)."""
+    _sync_graph_json()  # ponytail: prune orphan nodes before returning
+    if not GRAPH_PATH.exists():
+        return {"nodes": [], "edges": []}
+    try:
+        with open(GRAPH_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"nodes": [], "edges": []}
+
+
+@app.get("/api/graph/query")
+async def graph_query(q: str, limit: int = 10):
+    """Busca nodos en graph.json por label → nodos + edges adyacentes. Para RAG del chat."""
+    return search_graph(q, limit)
+
+
+from pydantic import BaseModel
+
+class ProjectCreate(BaseModel):
+    name: str
+    description: str = ""
+    color: str = "#4edea3"
+
+# ============================================
+# ENDPOINTS DE PROYECTOS
+# ============================================
+
+@app.get("/api/projects")
+async def list_projects():
+    """Lista todos los proyectos de vault/system/projects.json."""
+    return _load_projects()
+
+@app.post("/api/projects")
+async def create_project(project: ProjectCreate):
+    """Crea un proyecto nuevo. Genera id (slug) + created."""
+    import uuid
+    data = _load_projects()
+    project_id = _slugify(project.name)
+    # ponytail: id único — si existe, append suffix
+    if any(p["id"] == project_id for p in data["projects"]):
+        project_id = f"{project_id}-{uuid.uuid4().hex[:4]}"
+    new_project = {
+        "id": project_id,
+        "name": project.name,
+        "description": project.description,
+        "created": datetime.utcnow().isoformat() + "Z",
+        "color": project.color,
+    }
+    data["projects"].append(new_project)
+    _save_projects(data)
+    # crear carpeta raw/<id>/
+    (Path(VAULT_PATH) / "raw" / project_id).mkdir(parents=True, exist_ok=True)
+    return new_project
+
+@app.delete("/api/projects/{project_id}")
+async def delete_project(project_id: str):
+    """Borra un proyecto: carpeta raw/<id>/ + entrada en projects.json + limpia graph.json por archivo."""
+    data = _load_projects()
+    data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+    _save_projects(data)
+    # borrar carpeta raw/<id>/ + limpiar graph.json por cada archivo
+    project_dir = Path(VAULT_PATH) / "raw" / project_id
+    if project_dir.exists():
+        for fname in project_dir.iterdir():
+            if fname.is_file():
+                _delete_vault_item("raw", f"{project_id}/{fname.name}")
+        # ponytail: limpiar tmp de Graphify si existe, luego borrar dir si vacío
+        import shutil as _sh
+        _sh.rmtree(project_dir / "graphify-out", ignore_errors=True)
+        project_dir.rmdir() if not any(project_dir.iterdir()) else None
+    return {"ok": True}
+
+class ProjectUpdate(BaseModel):
+    description: str | None = None
+    color: str | None = None
+
+@app.put("/api/projects/{project_id}")
+async def update_project(project_id: str, update: ProjectUpdate):
+    """Actualiza descripción y/o color de un proyecto."""
+    data = _load_projects()
+    for p in data["projects"]:
+        if p["id"] == project_id:
+            if update.description is not None:
+                p["description"] = update.description
+            if update.color is not None:
+                p["color"] = update.color
+            _save_projects(data)
+            return p
+    raise HTTPException(status_code=404, detail="Proyecto no encontrado")
 
 
 @app.post("/api/vault/process")
@@ -1315,6 +1673,16 @@ async def process_raw_file(request: dict):
         if line.strip() == "---" or line.startswith("✅"):
             content_start = i + 1
     extracted_text = "\n".join(text_lines[content_start:]).strip() or extracted_text
+
+    # ponytail: Graphify — extraer estructura del archivo → graph.json
+    file_ext = raw_file.suffix.lower()
+    if file_ext in GRAPHIFY_EXTS:
+        try:
+            partial = _run_graphify(f"/app/vault/{file_path}", vault_host)
+            if partial:
+                _merge_graph(partial, raw_file.name)
+        except Exception as e:
+            print(f"⚠️ Graphify falló para {raw_file.name}: {e}")
 
     # 2. Sintetizar página wiki (lossless, multi-chunk)
     stem = raw_file.stem

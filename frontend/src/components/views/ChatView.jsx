@@ -1,20 +1,25 @@
 import React, { useRef, useState } from 'react'
-
-const ALLOWED_EXTS = ['pdf','png','jpg','jpeg','gif','webp','txt','md','markdown','mp3','wav','ogg','m4a','mp4','webm','mov','csv','json','yaml','yml']
+import AddFilesPopup from '../shared/AddFilesPopup'
 
 function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatUploading, chatAttachedFile, chatDragOver,
-  setChatMessage, setChatAttachedFile, onSend, onUploadFile, onDragOver, onDragLeave, onDrop, fileInputRef }) {
+  setChatMessage, setChatAttachedFile, onSend, onUploadFile, onDragOver, onDragLeave, onDrop, fileInputRef, onRefreshGraph, projects, onReloadProjects }) {
 
   const localRef = useRef(null)
+  const [showAddPopup, setShowAddPopup] = useState(false)
 
-  const handleFileSelect = (file) => {
-    if (!file) return
-    const ext = file.name.split('.').pop().toLowerCase()
-    if (!ALLOWED_EXTS.includes(ext)) { alert('Tipo no soportado: .' + ext); return }
-    onUploadFile(file)
+  const handleFileSelect = (files) => {
+    if (!files || !files.length) return
+    // ponytail: sin filtro de extensiones — aceptar cualquier archivo
+    Array.from(files).forEach(file => onUploadFile(file))
   }
 
   const previewIcon = (type) => ({ image: 'image', audio: 'audio_file', video: 'movie', document: 'description' }[type] || 'description')
+
+  // ponytail: cerrar popup → refrescar grafo
+  const handleClosePopup = () => {
+    setShowAddPopup(false)
+    onRefreshGraph?.()
+  }
 
   return (
     <div
@@ -121,12 +126,18 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
         </div>
       )}
 
-      {/* Input */}
+      {/* ponytail: botón "Añadir archivos" encima de la barra de input — abre popup compartido */}
       <div style={{ position: 'sticky', bottom: 0, paddingTop: 'var(--space-4)' }}>
-        <input type="file" ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => { if (e.target.files[0]) { handleFileSelect(e.target.files[0]); e.target.value = '' } }}
-          accept={ALLOWED_EXTS.map(e => '.' + e).join(',')} />
+        <div style={{ marginBottom: 'var(--space-2)' }}>
+          <button className="btn-app btn-app-secondary" onClick={() => setShowAddPopup(true)} disabled={chatLoading || chatUploading}
+            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
+            Añadir archivos
+          </button>
+        </div>
+        <input type="file" multiple ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => { if (e.target.files.length) { handleFileSelect(e.target.files); e.target.value = '' } }} />
         <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', background: 'var(--color-surface-high)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-md)', padding: 'var(--space-2)' }}>
-          <button onClick={() => fileInputRef.current?.click()} disabled={chatLoading || chatUploading} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-2)' }} title="Adjuntar archivo">
+          <button onClick={() => fileInputRef.current?.click()} disabled={chatLoading || chatUploading} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-2)' }} title="Adjuntar archivo rápido">
             <span className="material-symbols-outlined">attach_file</span>
           </button>
           <input
@@ -143,6 +154,8 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
           </button>
         </div>
       </div>
+
+      {showAddPopup && <AddFilesPopup onClose={handleClosePopup} projects={projects || []} onReloadProjects={onReloadProjects} />}
 
       <style>{`.thinking-dot{animation:blink 1.4s infinite both;font-size:8px;color:var(--color-text-tertiary)}.thinking-dot:nth-child(2){animation-delay:.2s}.thinking-dot:nth-child(3){animation-delay:.4s}@keyframes blink{0%{opacity:.2}20%{opacity:1}100%{opacity:.2}}`}</style>
     </div>
