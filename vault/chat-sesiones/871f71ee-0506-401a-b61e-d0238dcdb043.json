@@ -1,0 +1,27 @@
+{
+  "id": "871f71ee-0506-401a-b61e-d0238dcdb043",
+  "title": "Que es la fotosintesis?",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Que es la fotosintesis?",
+      "context": null,
+      "timestamp": "2026-08-09T22:29:45.449021"
+    },
+    {
+      "role": "assistant",
+      "content": "La fotosíntesis es el proceso metabólico mediante el cual las plantas,\nalgas y algunas bacterias convierten sustancias inorgánicas (como dióxido\nde carbono y agua) en sustancias orgánicas (hidratos de carbono y\nglucosa) utilizando la energía de la luz solar, liberando oxígeno como\nsubproducto. Es el motor principal que hace posible la vida en la Tierra.",
+      "context": {
+        "via": "chat-default",
+        "found_info": true,
+        "sources": [],
+        "mode": "default",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-09T22:29:52.135592"
+    }
+  ],
+  "createdAt": "2026-08-09T22:26:46.505095",
+  "updatedAt": "2026-08-09T22:34:08.427073",
+  "lastActive": false
+}

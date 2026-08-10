@@ -1,9 +1,0 @@
-model: openai/gpt-4o-mini
-temperature: 0.1
-skills:
-  - file
-  - terminal
-terminal:
-  cwd: /app/vault/wiki
-index:
-  path: /app/vault/system/index.json

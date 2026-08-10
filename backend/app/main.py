@@ -311,12 +311,10 @@ async def get_models_config():
     models_path = Path(VAULT_PATH) / "system" / "models.json"
     if not models_path.exists():
         return {
-            "defaultModel": "openai/gpt-4o-mini",
+            "defaultModel": "deepseek/deepseek-v4-flash",
             "availableModels": [
-                "openai/gpt-4o-mini",
-                "openai/gpt-4o",
-                "anthropic/claude-3.5-sonnet",
-                "google/gemini-2.0-flash-exp"
+                "deepseek/deepseek-v4-flash",
+                "deepseek/deepseek-v4-flash",
             ],
             "provider": "openrouter",
             "apiKeyConfigured": bool(get_agent_key("hermes")) or bool(OPENROUTER_API_KEY)
@@ -386,6 +384,16 @@ GRAPH_PATH = Path(VAULT_PATH) / "system" / "graph.json"
 # Extensión que Graphify procesa (Pass 1 código + Pass 3 docs). Audio/video se queda en Whisper.
 GRAPHIFY_EXTS = {".py",".js",".cjs",".ts",".tsx",".jsx",".go",".rs",".java",".rb",".c",".h",".cpp",".hpp",".cc",".cs",".kt",".swift",".php",".scala",".lua",".sh",".md",".rst",".txt",".mdx",".pdf",".png",".jpg",".jpeg",".gif",".webp",".bmp",".csv",".json",".yaml",".yml",".html",".htm",".xml",".sql"}
 
+def _get_graphify_model() -> str:
+    """Lee el modelo de Graphify desde agent-config.json. Default: google/gemma-4-26b-a4b-it:free."""
+    config = get_agent_config()
+    if config:
+        models = config.get("models", {})
+        gm = models.get("graphify", "")
+        if gm:
+            return gm
+    return "google/gemma-4-26b-a4b-it:free"
+
 def _run_graphify(file_abs_path: str, vault_host: str) -> dict | None:
     """Ejecuta Graphify sobre el directorio del archivo. Output a vault/system/graphify-tmp/graphify-out/graph.json.
     ponytail: Graphify espera un directorio, no un archivo individual."""
@@ -396,9 +404,11 @@ def _run_graphify(file_abs_path: str, vault_host: str) -> dict | None:
     input_dir = _os.path.dirname(file_abs_path) or file_abs_path
     try:
         # ponytail: pasar env vars al contenedor efímero — Graphify necesita OPENAI_API_KEY
-        env_vars = ["-e", f"OPENAI_API_KEY={OPENROUTER_API_KEY or get_agent_key('hermes') or ''}",
+        # ponytail: modelo de Graphify configurable desde agent-config.json (models.graphify)
+        graphify_model = _get_graphify_model()
+        env_vars = ["-e", f"OPENAI_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY or ''}",
                     "-e", "OPENAI_BASE_URL=https://openrouter.ai/api/v1",
-                    "-e", "GRAPHIFY_OPENAI_MODEL=google/gemma-4-26b-a4b-it:free",
+                    "-e", f"GRAPHIFY_OPENAI_MODEL={graphify_model}",
                     "-e", "GRAPHIFY_FORCE=1"]
         result = subprocess.run(
             ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
@@ -479,21 +489,22 @@ def _prune_graph_json(source_file: str) -> None:
         print(f"⚠️ _prune_graph_json error: {e}")
 
 def _sync_graph_json() -> None:
-    """Elimina nodos de graph.json cuyo source_file ya no existe en raw/."""
-    # ponytail: O(n) scan — called at startup + GET /api/graph/full
+    """Elimina nodos de graph.json cuyo source_file ya no existe en raw/ o outputs/."""
+    # ponytail: O(n) scan — called at startup + GET /api/graph/full. Verifica raw/ + outputs/.
     if not GRAPH_PATH.exists():
         return
     try:
         with open(GRAPH_PATH) as f:
             graph = json.load(f)
-        raw_path = Path(VAULT_PATH) / "raw"
         existing_files = set()
-        if raw_path.exists():
-            for f_ in raw_path.rglob("*"):
-                if f_.is_file() and f_.name != ".gitkeep" and ".processed" not in str(f_):
-                    existing_files.add(f_.name)
+        for category in ("raw", "outputs"):
+            cat_path = Path(VAULT_PATH) / category
+            if cat_path.exists():
+                for f_ in cat_path.rglob("*"):
+                    if f_.is_file() and f_.name != ".gitkeep" and ".processed" not in str(f_):
+                        existing_files.add(f_.name)
         before = len(graph.get("nodes", []))
-        graph["nodes"] = [n for n in graph.get("nodes", [])
+        graph["nodes"] = [n for n in graph.get("nodes")
                           if n.get("source_file") in existing_files or not n.get("source_file")]
         valid_ids = {n["id"] for n in graph["nodes"]}
         graph["edges"] = [e for e in graph.get("edges", [])
@@ -510,8 +521,9 @@ def _graphify_file_path(file_path: str) -> str:
     """Construye el path absoluto dentro del contenedor para un archivo del vault."""
     return f"/app/vault/{file_path}"
 
-def search_graph(query: str, limit: int = 10) -> dict:
-    """Busca nodos en graph.json por label → devuelve nodos + edges adyacentes."""
+def search_graph(query: str, limit: int = 10, stems: list = None) -> dict:
+    """Busca nodos en graph.json por label → devuelve nodos + edges adyacentes.
+    ponytail: si stems se pasa, boost nodos cuyo source_file stem esté en la lista."""
     if not GRAPH_PATH.exists():
         return {"nodes": [], "edges": []}
     try:
@@ -534,6 +546,12 @@ def search_graph(query: str, limit: int = 10) -> dict:
     for n in graph.get("nodes", []):
         label = _normalize(n.get("label", ""))
         s = sum(1 for w in words if w in label)
+        # ponytail: boost si source_file stem está en stems (viene de Estructura)
+        if s > 0 and stems:
+            sf = n.get("source_file", "")
+            sf_stem = Path(sf).stem if sf else ""
+            if sf_stem in stems:
+                s += 5
         if s > 0:
             scored.append((s, n))
     scored.sort(key=lambda x: -x[0])
@@ -700,112 +718,463 @@ def _synthesize_wiki(stem: str, extracted_text: str, api_key: str) -> str:
     return "\n\n".join(parts)
 
 
+# ============================================
+# CHAT SESSIONS — Sesiones persistentes en vault/chat-sesiones/
+# ============================================
+
+import uuid
+
+SESSIONS_DIR = lambda: Path(VAULT_PATH) / "chat-sesiones"
+
+def _ensure_sessions_dir():
+    d = SESSIONS_DIR()
+    d.mkdir(parents=True, exist_ok=True)
+    (d / ".gitkeep").touch(exist_ok=True)
+
+def _session_path(session_id: str) -> Path:
+    return SESSIONS_DIR() / f"{session_id}.json"
+
+def _load_session(session_id: str) -> dict | None:
+    p = _session_path(session_id)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _save_session(session: dict):
+    _ensure_sessions_dir()
+    p = _session_path(session["id"])
+    p.write_text(json.dumps(session, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _unset_last_active():
+    """Desmarca lastActive en todas las sesiones."""
+    d = SESSIONS_DIR()
+    if not d.exists():
+        return
+    for f in d.glob("*.json"):
+        try:
+            s = json.loads(f.read_text(encoding="utf-8"))
+            if s.get("lastActive"):
+                s["lastActive"] = False
+                f.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            continue
+
+def _load_session_history(session_id: str, limit: int = 10) -> list[dict]:
+    """Lee últimos N mensajes para inyectar como contexto."""
+    s = _load_session(session_id)
+    if not s:
+        return []
+    msgs = s.get("messages", [])
+    return msgs[-limit:] if len(msgs) > limit else msgs
+
+def _save_to_session(session_id: str, role: str, content: str, context: dict = None):
+    """Añade mensaje al JSON + actualiza updatedAt + auto-título."""
+    s = _load_session(session_id)
+    if not s:
+        return
+    s["messages"].append({
+        "role": role,
+        "content": content,
+        "context": context,
+        "timestamp": datetime.now().isoformat()
+    })
+    s["updatedAt"] = datetime.now().isoformat()
+    # ponytail: auto-título desde primer mensaje user
+    if not s.get("title") and role == "user":
+        s["title"] = content[:40].replace("\n", " ").strip()
+    _save_session(s)
+
+
+@app.get("/api/chat/sessions")
+async def list_chat_sessions():
+    _ensure_sessions_dir()
+    d = SESSIONS_DIR()
+    sessions = []
+    for f in d.glob("*.json"):
+        try:
+            s = json.loads(f.read_text(encoding="utf-8"))
+            sessions.append({
+                "id": s["id"],
+                "title": s.get("title", "Sin título"),
+                "createdAt": s.get("createdAt"),
+                "updatedAt": s.get("updatedAt"),
+                "lastActive": s.get("lastActive", False),
+            })
+        except Exception:
+            continue
+    sessions.sort(key=lambda x: x.get("updatedAt") or "", reverse=True)
+    return {"sessions": sessions}
+
+
+@app.post("/api/chat/sessions")
+async def create_chat_session():
+    _ensure_sessions_dir()
+    _unset_last_active()
+    session = {
+        "id": str(uuid.uuid4()),
+        "title": "",
+        "messages": [],
+        "createdAt": datetime.now().isoformat(),
+        "updatedAt": datetime.now().isoformat(),
+        "lastActive": True,
+    }
+    _save_session(session)
+    return {"id": session["id"], "title": session["title"], "createdAt": session["createdAt"]}
+
+
+@app.get("/api/chat/sessions/{session_id}")
+async def get_chat_session(session_id: str):
+    s = _load_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    return s
+
+
+@app.put("/api/chat/sessions/{session_id}")
+async def update_chat_session(session_id: str, updates: dict):
+    s = _load_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    if "title" in updates:
+        s["title"] = updates["title"]
+    if "messages" in updates:
+        s["messages"] = updates["messages"]
+    if "lastActive" in updates and updates["lastActive"]:
+        _unset_last_active()
+        s["lastActive"] = True
+    s["updatedAt"] = datetime.now().isoformat()
+    _save_session(s)
+    return {"id": s["id"], "title": s["title"], "updatedAt": s["updatedAt"]}
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def delete_chat_session(session_id: str):
+    p = _session_path(session_id)
+    if not p.exists():
+        raise HTTPException(status_code=404, detail="Sesión no encontrada")
+    was_active = False
+    s = _load_session(session_id)
+    if s and s.get("lastActive"):
+        was_active = True
+    p.unlink()
+    # ponytail: si era la activa, marcar la siguiente disponible
+    if was_active:
+        sessions = await list_chat_sessions()
+        if sessions["sessions"]:
+            next_s = _load_session(sessions["sessions"][0]["id"])
+            if next_s:
+                next_s["lastActive"] = True
+                _save_session(next_s)
+    return {"deleted": session_id}
+
+
+# ============================================
+# INTERNET SEARCH — SearXNG
+# ============================================
+
+SEARXNG_URL = "http://searxng:8080"
+
+def search_internet(query: str, limit: int = 5) -> list[dict]:
+    """Busca en SearXNG. Returns [{title, url, snippet}]."""
+    try:
+        resp = httpx.get(f"{SEARXNG_URL}/search", params={"q": query, "format": "json"}, timeout=15)
+        data = resp.json()
+        return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
+                for r in data.get("results", [])[:limit]]
+    except Exception:
+        return []
+
+def _format_search_results(results: list[dict]) -> str:
+    """Formatea resultados SearXNG como contexto para el modelo."""
+    if not results:
+        return ""
+    out = "\n\n**Resultados de búsqueda web:**\n"
+    for i, r in enumerate(results, 1):
+        out += f"\n{i}. **{r['title']}**\n   URL: {r['url']}\n   {r['snippet'][:300]}\n"
+    return out
+
+
+# ============================================
+# CHAT — Refactor con perfiles + modos + memoria
+# ============================================
+
+HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
+
+def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: int = 120) -> str:
+    """docker exec con perfil, inyecta historial (últimos 10 msgs)."""
+    # ponytail: inyectar historial como contexto
+    full_prompt = prompt
+    if history:
+        hist_text = "\n\n**Historial de conversación:**\n"
+        for msg in history:
+            role = msg.get("role", "")
+            content = msg.get("content", "")[:500]
+            hist_text += f"[{role}]: {content}\n"
+        full_prompt = hist_text + "\n\n**Pregunta/mensaje actual:**\n" + prompt
+
+    cmd = ["docker", "exec", "-e", f"OPENROUTER_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY}",
+           "cerebro-agente", HERMES_BIN, "chat", "-q", "-p", profile, full_prompt]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        # ponytail: fallback sin -p
+        cmd_no_profile = cmd[:6] + ["chat", "-q", full_prompt]
+        result = subprocess.run(cmd_no_profile, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr[:500])
+    return _parse_hermes_output(result.stdout)
+
+def _search_vault_context(query: str) -> tuple[str, list[str]]:
+    """RAG grafo-primero. Returns (context_text, sources)."""
+    graph_results = search_graph(query, limit=5)
+    graph_nodes = graph_results.get("nodes", [])
+    graph_edges = graph_results.get("edges", [])
+
+    wiki_context = ""
+    sources = []
+    if graph_nodes:
+        seen_stems = set()
+        wiki_path = Path(VAULT_PATH) / "wiki"
+        for n in graph_nodes:
+            sf = n.get("source_file", "")
+            if not sf:
+                continue
+            stem = Path(sf).stem
+            if stem in seen_stems:
+                continue
+            seen_stems.add(stem)
+            md_file = wiki_path / f"{stem}.md"
+            if not md_file.exists():
+                continue
+            try:
+                content = md_file.read_text(encoding="utf-8")[:800]
+                title = stem.replace("-", " ").title()
+                for line in content.split("\n"):
+                    if line.startswith("# "):
+                        title = line[2:].strip()
+                        break
+                wiki_context += f"\n**{title}** ({md_file.relative_to(VAULT_PATH)})\n{content}...\n"
+                sources.append(title)
+            except Exception:
+                continue
+
+    if not graph_nodes:
+        vault_results = search_vault(query)
+        if vault_results:
+            wiki_context = "\n\n---\n**Contexto del vault:**\n"
+            for i, r in enumerate(vault_results, 1):
+                wiki_context += f"\n**{i}. {r['title']}** ({r['path']})\n{r['content']}...\n"
+                sources.append(r["title"])
+            wiki_context += "---\n"
+
+    if graph_edges:
+        wiki_context += "\n\n---\n**Relaciones del grafo:**\n"
+        for e in graph_edges[:10]:
+            wiki_context += f"  {e.get('source','?')} --{e.get('relation','rel')}--> {e.get('target','?')}\n"
+        wiki_context += "---\n"
+
+    return wiki_context, sources
+
+
 @app.post("/api/chat")
 async def chat(message: dict):
     user_message = message.get("message", "")
+    session_id = message.get("session_id")
+    mode = message.get("mode", "default")  # default | smart | cerebro | cerebro+internet
     if not user_message:
         raise HTTPException(status_code=400, detail="Mensaje vacío")
 
     config = get_agent_config()
     agent_name = config.get("agentName", "Hermes") if config else "Hermes"
-
     api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
     if not api_key:
-        return {
-            "response": f"⚠️ **{agent_name} no tiene una API key configurada.**",
-            "context": {"error": "no_api_key"}
-        }
+        return {"response": f"⚠️ **{agent_name} no tiene una API key configurada.**", "context": {"error": "no_api_key"}}
 
-    # ponytail: RAG — buscar en wiki/ antes de enviar a Hermes
-    search_results = search_vault(user_message)
-    context_text = ""
-    if search_results:
-        context_text = "\n\n---\n**Contexto del vault:**\n"
-        for i, r in enumerate(search_results, 1):
-            context_text += f"\n**{i}. {r['title']}** ({r['path']})\n{r['content']}...\n"
-        context_text += "---\n"
+    # ponytail: cargar historial de sesión (últimos 10)
+    history = _load_session_history(session_id, limit=10) if session_id else []
 
-    # ponytail: Graph RAG — buscar nodos en graph.json (grafo "Neuronas")
-    graph_results = search_graph(user_message, limit=5)
-    graph_context = ""
-    if graph_results["nodes"]:
-        graph_context = "\n\n---\n**Grafo de conocimiento:**\n"
-        for n in graph_results["nodes"]:
-            label = n.get("label", n.get("id", ""))
-            sf = n.get("source_file", "")
-            conf = n.get("confidence", "")
-            graph_context += f"- {label}" + (f" ({sf})" if sf else "") + (f" [{conf}]" if conf else "") + "\n"
-        if graph_results["edges"]:
-            graph_context += "Relaciones:\n"
-            for e in graph_results["edges"][:15]:
-                rel = e.get("relation", "rel")
-                graph_context += f"  {e.get('source','?')} --{rel}--> {e.get('target','?')}\n"
-        graph_context += "---\n"
-
-    # ponytail: sesión persistente via --continue (recuerda mensajes previos del mismo proceso)
-    HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
-    combined_context = context_text + graph_context
-    full_message = f"{combined_context}\n\nPregunta: {user_message}" if combined_context.strip() else user_message
+    # ponytail: guardar mensaje user en sesión
+    if session_id:
+        _save_to_session(session_id, "user", user_message)
 
     try:
-        result = subprocess.run(
-            ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-             "cerebro-agente", HERMES_BIN, "chat", "-q", "--continue", full_message],
-            capture_output=True, text=True, timeout=120
-        )
-
-        if result.returncode != 0:
-            # ponytail: --continue falla si no hay sesión previa, retry sin flag
-            result = subprocess.run(
-                ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-                 "cerebro-agente", HERMES_BIN, "chat", "-q", full_message],
-                capture_output=True, text=True, timeout=120
+        if mode in ("cerebro", "cerebro+internet"):
+            # RAG vault
+            vault_context, sources = _search_vault_context(user_message)
+            anti_hallucinate = (
+                "\n\n**Instrucción:** Responde SOLO con la información del contexto anterior. "
+                "Si el contexto no contiene la respuesta, di que no tienes datos suficientes. "
+                "No inventes información."
             )
-            if result.returncode != 0:
-                return {
-                    "response": f"❌ **Error Hermes:**\n\n{result.stderr[:500]}",
-                    "context": {"error": "hermes_exec_error"}
-                }
+            cerebro_prompt = f"{vault_context}\n\nPregunta: {user_message}{anti_hallucinate}" if vault_context.strip() else user_message
 
-        # ponytail: parse naive — respuesta entre separadores unicode
-        output = result.stdout
-        lines = output.split("\n")
-        response_lines = []
-        in_response = False
-        for line in lines:
-            if "Hermes" in line and "─" in line:
-                in_response = True
-                continue
-            if in_response:
-                if line.startswith("Resume this session") or line.startswith("Session:"):
-                    break
-                response_lines.append(line.strip(" ╭╮╰╯│─"))
-        while response_lines and not response_lines[-1]:
-            response_lines.pop()
+            if mode == "cerebro":
+                # solo vault, sin internet
+                if not vault_context.strip():
+                    response = "🔍 **No he encontrado información sobre esto en el cerebro.**"
+                    ctx = {"via": "direct", "found_info": False, "sources": [], "mode": mode}
+                else:
+                    response = _ask_hermes("cerebro", cerebro_prompt, history)
+                    ctx = {"via": "cerebro", "found_info": True, "sources": sources, "mode": mode}
+            else:
+                # cerebro + internet → respuesta dividida
+                if vault_context.strip():
+                    cerebro_resp = _ask_hermes("cerebro", cerebro_prompt, history)
+                else:
+                    cerebro_resp = "No se encontró información en el cerebro."
+                    sources = []
+                # buscar internet
+                internet_results = search_internet(user_message)
+                if internet_results:
+                    internet_prompt = f"{_format_search_results(internet_results)}\n\nResume los resultados anteriores sobre: {user_message}"
+                    internet_resp = _ask_hermes("chat-default", internet_prompt, history)
+                else:
+                    internet_resp = "No se pudieron obtener resultados de internet."
+                response = f"🧠 **CEREBRO**\n\n{cerebro_resp}\n\n---\n\n🌐 **INTERNET**\n\n{internet_resp}"
+                ctx = {"via": "cerebro+internet", "found_info": bool(sources), "sources": sources, "mode": mode, "internet_results": len(internet_results)}
 
-        ai_response = "\n".join(response_lines).strip() or output.strip()
+        else:
+            # chat normal (default o smart) — busca internet por defecto
+            profile = "chat-smart" if mode == "smart" else "chat-default"
+            internet_results = search_internet(user_message)
+            search_context = _format_search_results(internet_results)
+            prompt = f"{search_context}\n\n{user_message}" if search_context else user_message
+            response = _ask_hermes(profile, prompt, history)
+            ctx = {"via": profile, "found_info": True, "sources": [], "mode": mode, "internet_results": len(internet_results)}
 
-        return {
-            "response": ai_response,
-            "context": {
-                "model": "openai/gpt-4o-mini",
-                "via": "hermes-coordinador",
-                "vault_results": len(search_results),
-                "graph_results": len(graph_results.get("nodes", [])),
-                "timestamp": datetime.now().isoformat()
-            }
-        }
+        # ponytail: guardar respuesta en sesión
+        if session_id:
+            _save_to_session(session_id, "assistant", response, ctx)
+
+        return {"response": response, "context": ctx}
 
     except subprocess.TimeoutExpired:
-        return {
-            "response": "⏰ **Tiempo de espera agotado.**",
-            "context": {"error": "timeout"}
-        }
+        return {"response": "⏰ **Tiempo de espera agotado.**", "context": {"error": "timeout"}}
     except Exception as e:
+        return {"response": f"❌ **Error:** {str(e)}", "context": {"error": str(e)}}
+
+
+@app.post("/api/chat/investigate")
+async def investigate(message: dict):
+    """Investiga mensajes seleccionados → documento Markdown completo + resumen breve.
+    Devuelve {response: summary, full_doc: document, context: {is_document, offer_save}}.
+    ponytail: dos llamadas — investigador genera .md completo, chat-default genera resumen."""
+    messages_list = message.get("messages", [])
+    session_id = message.get("session_id")
+    if not messages_list:
+        raise HTTPException(status_code=400, detail="No hay mensajes seleccionados")
+
+    config = get_agent_config()
+    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
+    if not api_key:
+        return {"response": "⚠️ No hay API key configurada.", "full_doc": "", "context": {"error": "no_api_key"}}
+
+    # ponytail: combinar mensajes seleccionados como contexto
+    combined = ""
+    for msg in messages_list:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+        combined += f"\n[{role}]: {content}\n"
+
+    prompt = (
+        "Investiga el siguiente tema basándote en el contexto del chat y genera un documento "
+        "en formato Markdown compatible con Obsidian. Usa títulos (#, ##, ###), **negritas**, "
+        "listas, [[wikilinks]], tablas y code blocks cuando aplique. "
+        "Estructura: título, resumen, secciones detalladas, conclusiones, fuentes. "
+        "Sin preámbulos. Empieza con # Título.\n\n"
+        f"Contexto del chat:\n{combined}"
+    )
+
+    history = _load_session_history(session_id, limit=10) if session_id else []
+    try:
+        # 1. generar documento completo
+        full_doc = _ask_hermes("investigador", prompt, history, timeout=180)
+
+        # 2. generar resumen breve (3-5 líneas) desde el documento completo
+        summary_prompt = (
+            "Resume el siguiente documento en 3-5 líneas con los puntos clave. "
+            "Sin preámbulos, sin títulos, solo el resumen directo.\n\n"
+            f"{full_doc[:3000]}"
+        )
+        summary = _ask_hermes("chat-default", summary_prompt, history, timeout=60)
+
         return {
-            "response": f"❌ **Error:** {str(e)}",
-            "context": {"error": str(e)}
+            "response": summary,
+            "full_doc": full_doc,
+            "context": {
+                "via": "investigador",
+                "is_document": True,
+                "offer_save": True,
+                "sources": [],
+            }
         }
+    except subprocess.TimeoutExpired:
+        return {"response": "⏱️ La investigación tardó demasiado.", "full_doc": "", "context": {"error": "investigate_timeout"}}
+
+
+# ponytail: save-output — guarda Markdown en outputs/ + wiki/ + Graphify
+from pydantic import BaseModel as _BM
+
+class SaveOutputRequest(_BM):
+    content: str
+    project_id: str = "individual"
+    name: str = ""
+    description: str = ""
+
+@app.post("/api/vault/save-output")
+async def save_output(req: SaveOutputRequest):
+    """Guarda doc en outputs/<project_id>/ + copia a wiki/ + Graphify."""
+    import re as _re
+    safe_name = _re.sub(r'[^a-z0-9\-_]+', '-', req.name.lower().strip()).strip('-') if req.name else ""
+    if not safe_name:
+        for line in req.content.split("\n"):
+            if line.startswith("# "):
+                safe_name = _re.sub(r'[^a-z0-9\-_]+', '-', line[2:].lower().strip()).strip('-')
+                break
+    if not safe_name:
+        safe_name = f"doc-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+    out_dir = Path(VAULT_PATH) / "outputs" / req.project_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{safe_name}.md"
+
+    # ponytail: añadir descripción como metadata si existe
+    content = req.content
+    if req.description:
+        content += f"\n\n---\n**Descripción**: {req.description}\n"
+    out_file.write_text(content, encoding="utf-8")
+
+    wiki_file = Path(VAULT_PATH) / "wiki" / f"{safe_name}.md"
+    wiki_file.parent.mkdir(parents=True, exist_ok=True)
+    wiki_file.write_text(content, encoding="utf-8")
+
+    graphify_ok = False
+    try:
+        # ponytail: obtener vault_host real del host (VAULT_PATH es /app/vault dentro del contenedor)
+        vault_host = VAULT_PATH
+        client = get_docker_client()
+        if client:
+            try:
+                bc = client.containers.get("cerebro-backend")
+                vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
+            except Exception:
+                pass
+        partial = _run_graphify(str(out_file), vault_host)
+        if partial:
+            _merge_graph(partial, safe_name + ".md")
+            graphify_ok = True
+    except Exception as e:
+        print(f"⚠️ save-output graphify error: {e}")
+
+    return {
+        "status": "saved",
+        "path": f"outputs/{req.project_id}/{safe_name}.md",
+        "wiki_path": f"wiki/{safe_name}.md",
+        "graph_updated": graphify_ok,
+        "project_id": req.project_id
+    }
 
 
 # ============================================
@@ -892,6 +1261,72 @@ async def get_agent_config_public():
         "createdAt": config.get("createdAt"),
         "updatedAt": config.get("updatedAt")
     }
+
+
+# ============================================
+# ENDPOINT PARA GESTIÓN DE MODELOS POR PERFIL
+# ============================================
+
+PROFILE_DEFS = [
+    {"key": "chat-default", "label": "Chat Default", "default": "openrouter/auto"},
+    {"key": "chat-smart", "label": "Chat Inteligente", "default": "deepseek/deepseek-v4-flash"},
+    {"key": "cerebro", "label": "Cerebro", "default": "deepseek/deepseek-v4-flash"},
+    {"key": "investigador", "label": "Investigador", "default": "deepseek/deepseek-v4-flash"},
+    {"key": "graphify", "label": "Graphify (Neuronas)", "default": "google/gemma-4-26b-a4b-it:free"},
+]
+
+@app.get("/api/profiles/models")
+async def get_profiles_models():
+    config = get_agent_config()
+    if not config:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    models = config.get("models", {})
+    names = config.get("profileNames", {})
+    return {"profiles": [
+        {"key": p["key"], "name": names.get(p["key"], p["label"]), "model": models.get(p["key"], p["default"])}
+        for p in PROFILE_DEFS
+    ]}
+
+
+@app.put("/api/profiles/models")
+async def update_profiles_models(request: dict):
+    import subprocess
+    config = get_agent_config()
+    if not config:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+
+    new_models = request.get("models", {})
+    new_names = request.get("profileNames", {})
+    old_models = config.get("models", {})
+
+    config["models"] = new_models
+    config["profileNames"] = new_names
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+
+    # ponytail: docker restart reejecuta entrypoint → generate_config.py + install_profiles.sh aplican nuevos modelos
+    result = subprocess.run(["docker", "restart", "cerebro-agente"], capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        return {"success": False, "message": f"Modelos guardados pero error al reiniciar: {result.stderr}"}
+
+    # Esperar readiness
+    import time
+    for _ in range(30):
+        try:
+            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://cerebro-agente:8080/login"], capture_output=True, text=True, check=False)
+            if r.stdout.strip() == "200":
+                break
+        except:
+            pass
+        time.sleep(2)
+
+    changes = [
+        {"name": new_names.get(p["key"], p["label"]), "oldModel": old_models.get(p["key"], p["default"]), "newModel": new_models.get(p["key"], p["default"])}
+        for p in PROFILE_DEFS
+        if old_models.get(p["key"], p["default"]) != new_models.get(p["key"], p["default"])
+    ]
+
+    return {"success": True, "changes": changes}
 
 
 # ============================================
@@ -1113,6 +1548,7 @@ async def configure_agent(request: dict):
         telegram_token = request.get("telegramToken", "").strip()
         discord_token = request.get("discordToken", "").strip()
         whatsapp_phone = request.get("whatsappPhone", "").strip()
+        models = request.get("models", {})
 
         if not agent_name:
             agent_name = "Hermes"
@@ -1138,10 +1574,11 @@ async def configure_agent(request: dict):
                 "password": dashboard_password
             },
             "channelTokens": {
-                "telegram": telegram_token,
-                "discord": discord_token,
-                "whatsapp": whatsapp_phone
-            },
+                            "telegram": telegram_token,
+                            "discord": discord_token,
+                            "whatsapp": whatsapp_phone
+                        },
+                        "models": models,
             "createdAt": datetime.now().isoformat(),
             "updatedAt": datetime.now().isoformat()
         }
@@ -1175,13 +1612,18 @@ async def export_vault():
     temp_dir = tempfile.mkdtemp()
     export_file = Path(temp_dir) / f"vault-backup-{timestamp}.tar.gz"
 
+    # ponytail: excluir credenciales del export — el destino pide su propia API key en el wizard
+    SENSITIVE = {"agent-keys.json"}
     try:
         with tarfile.open(export_file, "w:gz") as tar:
-            for item in vault_path.iterdir():
-                if item.name == ".git":
+            for item in vault_path.rglob("*"):
+                if not item.is_file():
                     continue
-                tar.add(str(item), arcname=item.name)
-
+                if ".git" in item.parts:
+                    continue
+                if item.name in SENSITIVE:
+                    continue
+                tar.add(str(item), arcname=str(item.relative_to(vault_path)))
         return FileResponse(
             path=str(export_file),
             media_type="application/gzip",
@@ -1192,49 +1634,55 @@ async def export_vault():
 
 
 @app.post("/api/vault/import")
-async def import_vault(file: bytes = File(...)):
-    """Acepta un .tar.gz y lo descomprime en el vault."""
-    import tempfile
-    import tarfile
-    import io
+async def import_vault(file: UploadFile = File(...)):
+    """Acepta .tar.gz o .tar, lo descomprime en el vault.
+    ponytail: preserva API key + dashboard del destino — ya configurados por wizard.
+    Solo borra agent-keys.json del import (no debe sobreescribir el local)."""
+    import tempfile, tarfile, io, shutil
 
     vault_path = Path(VAULT_PATH)
 
     try:
-        # Leer el archivo subido
-        tar_bytes = file
-        tar_io = io.BytesIO(tar_bytes)
+        content = await file.read()
+        tar_io = io.BytesIO(content)
 
-        # Verificar que es un tar.gz válido
+        # ponytail: detectar formato — probar r:gz primero, luego r:
+        tar = None
         try:
             tar = tarfile.open(fileobj=tar_io, mode="r:gz")
         except tarfile.ReadError:
-            raise HTTPException(status_code=400, detail="El archivo no es un .tar.gz válido")
+            tar_io.seek(0)
+            try:
+                tar = tarfile.open(fileobj=tar_io, mode="r:")
+            except tarfile.ReadError:
+                raise HTTPException(status_code=400, detail="El archivo no es un .tar o .tar.gz válido")
 
-        # Crear backup del vault actual por seguridad
+        # ponytail: backup del vault actual por seguridad
         backup_dir = vault_path.parent / f"vault-backup-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         if vault_path.exists():
-            import shutil
             shutil.copytree(str(vault_path), str(backup_dir), dirs_exist_ok=True)
 
-        # Extraer el tar.gz en una carpeta temporal primero
+        # Extraer a temp primero
         temp_dir = Path(tempfile.mkdtemp())
         tar.extractall(str(temp_dir))
         tar.close()
 
-        # Verificar que la estructura es válida
+        # Validar estructura
         required_dirs = ["raw", "wiki", "outputs", "system"]
         found_dirs = [d.name for d in temp_dir.iterdir() if d.is_dir()]
         missing = [d for d in required_dirs if d not in found_dirs]
-
         if missing:
-            raise HTTPException(
-                status_code=400,
-                detail=f"El vault importado no tiene la estructura válida. Faltan: {', '.join(missing)}"
-            )
+            raise HTTPException(status_code=400, detail=f"Estructura inválida. Faltan: {', '.join(missing)}")
 
-        # Copiar el contenido al vault
-        import shutil
+        # ponytail: preservar config existente del destino (API key, dashboard) — NO sanitizar
+        existing_config = None
+        existing_keys = None
+        if AGENT_CONFIG_PATH.exists():
+            existing_config = AGENT_CONFIG_PATH.read_text(encoding="utf-8")
+        if AGENT_KEYS_PATH.exists():
+            existing_keys = AGENT_KEYS_PATH.read_text(encoding="utf-8")
+
+        # Copiar contenido del tar al vault
         for item in temp_dir.iterdir():
             dest = vault_path / item.name
             if dest.exists():
@@ -1244,12 +1692,25 @@ async def import_vault(file: bytes = File(...)):
                     dest.unlink()
             shutil.move(str(item), str(dest))
 
-        # Limpiar temporal
+        # ponytail: restaurar config local preservada — el import no toca credenciales
+        if existing_config:
+            AGENT_CONFIG_PATH.write_text(existing_config, encoding="utf-8")
+        if existing_keys:
+            AGENT_KEYS_PATH.write_text(existing_keys, encoding="utf-8")
+        # si el tar traía agent-keys.json, ya se sobreescribió arriba con shutil.move
+        # pero existing_keys (local) lo restaura después
+
         shutil.rmtree(str(temp_dir), ignore_errors=True)
+
+        # ponytail: reiniciar agente para que cargue los datos nuevos
+        try:
+            subprocess.run(["docker", "restart", "cerebro-agente"], capture_output=True, timeout=30)
+        except Exception:
+            pass
 
         return {
             "success": True,
-            "message": f"Vault importado correctamente. Backup anterior en: {backup_dir.name}"
+            "message": "Vault importado correctamente. Credenciales preservadas."
         }
     except HTTPException:
         raise
@@ -1413,9 +1874,14 @@ def _delete_vault_item(category: str, rel_path: str) -> dict:
     # ponytail: limpiar graph.json de nodos del archivo borrado
     _prune_graph_json(target.name)
 
-    # ponytail: limpiar .processed si el directorio queda vacío
+    # ponytail: limpiar subdir vacío — pero NO dirs de proyecto (viven en projects.json)
     if target.parent.exists() and not any(target.parent.iterdir()):
-        target.parent.rmdir()
+        raw_path = Path(VAULT_PATH) / "raw"
+        is_project_dir = (target.parent.parent == raw_path and
+                          any(p["id"] == target.parent.name
+                              for p in _load_projects().get("projects", [])))
+        if not is_project_dir:
+            target.parent.rmdir()
 
     return {"deleted": deleted, "stem": stem}
 
@@ -1456,7 +1922,103 @@ async def batch_delete(items: list = Body(...)):
             results["errors"].append({"path": p, "error": e.detail})
         except Exception as e:
             results["errors"].append({"path": p, "error": str(e)})
+    _sync_graph_json()
     return results
+
+
+# ponytail: renombrar archivo + wiki + graph.json source_file
+class RenameRequest(_BM):
+    category: str
+    path: str
+    newName: str
+
+@app.put("/api/vault/rename")
+async def rename_vault_item(req: RenameRequest):
+    """Renombra archivo en raw/ o outputs/ + wiki derivada + actualiza graph.json."""
+    if req.category not in ("raw", "outputs") or not req.path:
+        raise HTTPException(status_code=400, detail="Parámetros inválidos")
+    base = Path(VAULT_PATH) / req.category
+    target = (base / req.path).resolve()
+    if not str(target).startswith(str(base.resolve())):
+        raise HTTPException(status_code=400, detail="Path inválido")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+
+    old_name = target.name
+    old_stem = target.stem
+    new_path = target.parent / req.newName
+    target.rename(new_path)
+
+    # .txt hermano (raw)
+    old_txt = target.with_suffix(".txt")
+    if old_txt.exists() and old_txt != target:
+        old_txt.rename(new_path.with_suffix(".txt"))
+
+    # wiki derivada
+    old_wiki = Path(VAULT_PATH) / "wiki" / f"{old_stem}.md"
+    if old_wiki.exists():
+        old_wiki.rename(Path(VAULT_PATH) / "wiki" / f"{new_path.stem}.md")
+
+    # graph.json: actualizar source_file
+    if GRAPH_PATH.exists():
+        try:
+            with open(GRAPH_PATH) as f:
+                graph = json.load(f)
+            for n in graph.get("nodes", []):
+                if n.get("source_file") == old_name:
+                    n["source_file"] = req.newName
+            with open(GRAPH_PATH, "w") as f:
+                json.dump(graph, f, ensure_ascii=False)
+        except Exception as e:
+            print(f"⚠️ rename graph update error: {e}")
+
+    return {"ok": True, "oldName": old_name, "newName": req.newName}
+
+
+# ponytail: reasignar archivos entre proyectos
+class ReassignRequest(_BM):
+    items: list  # [{category, path}]
+    targetProject: str  # project_id o "individual"
+
+@app.post("/api/vault/reassign")
+async def reassign_files(req: ReassignRequest):
+    """Mueve archivos de un proyecto a otro en raw/ o outputs/."""
+    moved = []
+    errors = []
+    for item in req.items:
+        cat = item.get("category", "")
+        p = item.get("path", "")
+        if cat not in ("raw", "outputs") or not p:
+            errors.append({"path": p, "error": "item inválido"})
+            continue
+        base = Path(VAULT_PATH) / cat
+        src = (base / p).resolve()
+        if not str(src).startswith(str(base.resolve())):
+            errors.append({"path": p, "error": "path inválido"})
+            continue
+        if not src.exists():
+            errors.append({"path": p, "error": "no encontrado"})
+            continue
+        # construir destino
+        fname = src.name
+        if req.targetProject == "individual":
+            dst_dir = base
+        else:
+            dst_dir = base / req.targetProject
+            dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / fname
+        if dst.exists():
+            errors.append({"path": p, "error": "ya existe en destino"})
+            continue
+        src.rename(dst)
+        # .txt hermano
+        old_txt = src.with_suffix(".txt")
+        if old_txt.exists() and old_txt != src:
+            old_txt.rename(dst.with_suffix(".txt"))
+        moved.append({"from": p, "to": str(dst.relative_to(base))})
+    _sync_graph_json()
+    return {"moved": moved, "errors": errors}
+
 
 
 @app.get("/api/wiki/graph")
@@ -1469,25 +2031,52 @@ async def wiki_graph():
     edges = []
     node_ids = set()
 
-    # ponytail: nodos de proyecto desde projects.json — son los nodos principales
-    projects = _load_projects().get("projects", [])
-    # mapear stem de wiki → proyecto por carpeta raw/<project_id>/
+    # ponytail: nodos de proyecto — usar misma lógica que list_projects (incluye huérfanos)
+    projects = []
+    raw_path_local = Path(VAULT_PATH) / "raw"
+    outputs_path_local = Path(VAULT_PATH) / "outputs"
+    seen_pids = set()
+    for p in _load_projects().get("projects", []):
+        pid = p["id"]
+        if (raw_path_local / pid).exists() or (outputs_path_local / pid).exists():
+            projects.append(p)
+            seen_pids.add(pid)
+    for cat_path in (raw_path_local, outputs_path_local):
+        if not cat_path.exists():
+            continue
+        for d in cat_path.iterdir():
+            if d.is_dir() and d.name not in seen_pids and d.name != "graphify-out" and d.name != "individual" and not d.name.startswith("."):
+                projects.append({"id": d.name, "name": d.name.replace("-", " ").title(), "color": "#4edea3"})
+                seen_pids.add(d.name)
+    # mapear stem de wiki → proyecto por carpeta raw/<project_id>/ Y outputs/<project_id>/
     project_of_file = {}
-    raw_path = Path(VAULT_PATH) / "raw"
-    if raw_path.exists():
-        for proj in projects:
-            proj_dir = raw_path / proj["id"]
-            if proj_dir.exists():
-                for f in proj_dir.iterdir():
-                    if f.is_file() and f.name != ".gitkeep":
-                        project_of_file[f.stem] = proj
+    for category in ("raw", "outputs"):
+        cat_path = Path(VAULT_PATH) / category
+        if cat_path.exists():
+            for proj in projects:
+                proj_dir = cat_path / proj["id"]
+                if proj_dir.exists():
+                    for f in proj_dir.iterdir():
+                        if f.is_file() and f.name != ".gitkeep":
+                            project_of_file[f.stem] = proj
 
+    raw_path = Path(VAULT_PATH) / "raw"
     for proj in projects:
         pid = proj["id"]
+        # ponytail: mostrar proyecto si tiene carpeta en raw/ o outputs/
+        has_raw = (raw_path / pid).exists() if raw_path.exists() else False
+        has_outputs = (Path(VAULT_PATH) / "outputs" / pid).exists()
+        if not has_raw and not has_outputs:
+            continue
         if pid not in node_ids:
             nodes.append({"id": pid, "title": proj.get("name", pid), "path": None,
                            "type": "project", "color": proj.get("color", "#4edea3")})
             node_ids.add(pid)
+
+    # ponytail: nodo "individual" para archivos sin carpeta de proyecto
+    if "individual" not in node_ids:
+        nodes.append({"id": "individual", "title": "Individual", "path": None, "type": "project", "color": "#808080"})
+        node_ids.add("individual")
 
     if wiki_path.exists():
         for md_file in wiki_path.glob("**/*.md"):
@@ -1510,6 +2099,9 @@ async def wiki_graph():
             if stem in project_of_file:
                 proj = project_of_file[stem]
                 edges.append({"source": proj["id"], "target": stem, "color": proj.get("color", "#4edea3")})
+            else:
+                # ponytail: archivo sin carpeta de proyecto → edge a nodo "individual"
+                edges.append({"source": "individual", "target": stem, "color": "#808080"})
 
             # ponytail: regex simple para [[wikilinks]]
             links = re.findall(r'\[\[([^\]]+)\]\]', content)
@@ -1555,8 +2147,33 @@ class ProjectCreate(BaseModel):
 
 @app.get("/api/projects")
 async def list_projects():
-    """Lista todos los proyectos de vault/system/projects.json."""
-    return _load_projects()
+    """Lista proyectos — los de projects.json con carpeta raw/ o outputs/, + carpetas huérfanas auto-registradas."""
+    data = _load_projects()
+    raw_path = Path(VAULT_PATH) / "raw"
+    outputs_path = Path(VAULT_PATH) / "outputs"
+    seen = set()
+    result = []
+    # ponytail: proyectos de projects.json que tienen carpeta raw/ o outputs/
+    for p in data.get("projects", []):
+        pid = p["id"]
+        has_raw = (raw_path / pid).exists() if raw_path.exists() else False
+        has_outputs = (outputs_path / pid).exists() if outputs_path.exists() else False
+        if has_raw or has_outputs:
+            result.append(p)
+            seen.add(pid)
+    # ponytail: carpetas huérfanas en raw/ o outputs/ que no están en projects.json → auto-registrar
+    for cat_path in (raw_path, outputs_path):
+        if not cat_path.exists():
+            continue
+        for d in cat_path.iterdir():
+            if d.is_dir() and d.name not in seen and d.name != "graphify-out" and d.name != "individual" and not d.name.startswith("."):
+                # crear entrada en projects.json
+                new_p = {"id": d.name, "name": d.name.replace("-", " ").title(),
+                         "description": "", "created": datetime.utcnow().isoformat() + "Z",
+                         "color": "#4edea3"}
+                result.append(new_p)
+                seen.add(d.name)
+    return {"projects": result}
 
 @app.post("/api/projects")
 async def create_project(project: ProjectCreate):
@@ -1586,34 +2203,49 @@ async def delete_project(project_id: str):
     data = _load_projects()
     data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
     _save_projects(data)
-    # borrar carpeta raw/<id>/ + limpiar graph.json por cada archivo
-    project_dir = Path(VAULT_PATH) / "raw" / project_id
-    if project_dir.exists():
-        for fname in project_dir.iterdir():
-            if fname.is_file():
-                _delete_vault_item("raw", f"{project_id}/{fname.name}")
-        # ponytail: limpiar tmp de Graphify si existe, luego borrar dir si vacío
-        import shutil as _sh
-        _sh.rmtree(project_dir / "graphify-out", ignore_errors=True)
-        project_dir.rmdir() if not any(project_dir.iterdir()) else None
+    # ponytail: borrar raw/<id>/ + outputs/<id>/ + limpiar graph.json
+    import shutil as _sh
+    for category in ("raw", "outputs"):
+        project_dir = Path(VAULT_PATH) / category / project_id
+        if project_dir.exists():
+            for fname in project_dir.iterdir():
+                if fname.is_file():
+                    _delete_vault_item(category, f"{project_id}/{fname.name}")
+            _sh.rmtree(project_dir / "graphify-out", ignore_errors=True)
+            if not any(project_dir.iterdir()):
+                project_dir.rmdir()
+    _sync_graph_json()
     return {"ok": True}
 
 class ProjectUpdate(BaseModel):
     description: str | None = None
     color: str | None = None
+    name: str | None = None
 
 @app.put("/api/projects/{project_id}")
 async def update_project(project_id: str, update: ProjectUpdate):
-    """Actualiza descripción y/o color de un proyecto."""
+    """Actualiza nombre, descripción y/o color de un proyecto. Auto-registra si es huérfano."""
     data = _load_projects()
     for p in data["projects"]:
         if p["id"] == project_id:
+            if update.name is not None:
+                p["name"] = update.name
             if update.description is not None:
                 p["description"] = update.description
             if update.color is not None:
                 p["color"] = update.color
             _save_projects(data)
             return p
+    # ponytail: proyecto huérfano (carpeta existe pero no en projects.json) → registrar
+    raw_exists = (Path(VAULT_PATH) / "raw" / project_id).exists()
+    outputs_exists = (Path(VAULT_PATH) / "outputs" / project_id).exists()
+    if raw_exists or outputs_exists:
+        new_p = {"id": project_id, "name": update.name or project_id.replace("-", " ").title(),
+                 "description": update.description or "", "created": datetime.utcnow().isoformat() + "Z",
+                 "color": update.color or "#4edea3"}
+        data["projects"].append(new_p)
+        _save_projects(data)
+        return new_p
     raise HTTPException(status_code=404, detail="Proyecto no encontrado")
 
 

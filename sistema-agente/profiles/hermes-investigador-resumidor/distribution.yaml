@@ -1,9 +1,0 @@
-name: investigador-resumidor
-version: 0.1.0
-description: "Analista experto en síntesis que busca en la bóveda, genera resúmenes, esquemas jerárquicos y mapas mentales sobre temas concretos."
-author: "Isla Computer"
-hermes_requires: ">=0.6.0"
-env_requires:
-  - VAULT_ROOT
-  - WIKI_PATH
-  - RAW_PATH

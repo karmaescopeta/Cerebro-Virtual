@@ -14,7 +14,7 @@ channels:
     port: 8080
 llm:
   api_key: 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
-  model: openai/gpt-4o-mini
+  model: deepseek/deepseek-v4-flash
   provider: openrouter
 paths:
   data: /app/data

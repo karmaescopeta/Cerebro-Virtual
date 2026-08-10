@@ -1,0 +1,21 @@
+# ponytail: SearXNG config mínima — JSON API habilitado, sin API keys
+use_default_settings: true
+server:
+  bind_address: "0.0.0.0"
+  port: 8080
+  secret_key: "cerebro-virtual-searxng-2026"
+search:
+  formats:
+    - html
+    - json
+  autocomplete: ""
+  default_lang: "es"
+engines:
+  - name: duckduckgo
+    engine: duckduckgo
+  - name: google
+    engine: google
+  - name: bing
+    engine: bing
+  - name: wikipedia
+    engine: wikipedia

@@ -5,7 +5,7 @@ function WizardStep1({ formData, errors, updateForm, onNext }) {
   return (
     <div className="wizard-root">
       <div className="wizard-progress-bar">
-        <div className="wizard-progress-fill" style={{ width: '33%' }} />
+        <div className="wizard-progress-fill" style={{ width: '25%' }} />
       </div>
       <div className="wizard-card">
         <StepIndicator current={1} />

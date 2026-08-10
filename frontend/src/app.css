@@ -197,6 +197,135 @@ body {
 .input-app:focus { outline: none; border-color: var(--color-primary); }
 .input-app::placeholder { color: var(--color-text-tertiary); }
 
+/* --- Modelos View --- */
+.modelos-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-5);
+}
+.modelos-card {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.modelos-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.modelos-card-icon {
+  font-size: 20px;
+  color: var(--color-primary);
+}
+.modelos-card-name {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.modelos-card-model {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  word-break: break-all;
+  padding: var(--space-2) var(--space-3);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md);
+}
+.modelos-name-input { font-weight: 600; }
+.modelos-model-input { font-family: var(--font-mono); }
+
+/* --- Saving overlay --- */
+.modelos-saving-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(14, 14, 14, 0.85);
+  backdrop-filter: blur(8px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modelos-saving-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+.modelos-saving-text {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+.modelos-saving-subtext {
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+}
+
+/* --- Summary overlay --- */
+.modelos-summary-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(14, 14, 14, 0.8);
+  backdrop-filter: blur(6px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modelos-summary-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-surface-high);
+  border-radius: var(--radius-lg);
+  padding: var(--space-8);
+  max-width: 480px;
+  width: 90%;
+  box-shadow: var(--shadow-card);
+}
+.modelos-summary-icon {
+  text-align: center;
+  margin-bottom: var(--space-4);
+}
+.modelos-summary-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-align: center;
+  margin-bottom: var(--space-5);
+}
+.modelos-summary-text {
+  text-align: center;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+}
+.modelos-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.modelos-summary-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: var(--radius-md);
+}
+.modelos-summary-change {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.modelos-summary-old { color: var(--color-text-tertiary); text-decoration: line-through; }
+.modelos-summary-new { color: var(--color-success); }
+
+@media (max-width: 768px) {
+  .modelos-grid { grid-template-columns: 1fr; }
+}
+
 /* --- Status dot --- */
 .status-dot {
   width: 8px; height: 8px; border-radius: var(--radius-full); display: inline-block;
