@@ -2,8 +2,9 @@ import React from 'react'
 
 const STEPS = [
   { num: 1, label: 'CONFIGURAR' },
-  { num: 2, label: 'CONFIRMAR' },
-  { num: 3, label: 'FINALIZAR' },
+  { num: 2, label: 'MODELOS' },
+  { num: 3, label: 'CONFIRMAR' },
+  { num: 4, label: 'FINALIZAR' },
 ]
 
 function StepIndicator({ current }) {

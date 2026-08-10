@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react'
 import { forceSimulation, forceManyBody, forceLink, forceCenter, forceCollide } from 'd3-force'
+import MarkdownViewer from '../shared/MarkdownViewer'
 
 function GrafoView({ nodes, edges, refreshKey, projects }) {
   const svgRef = useRef(null)
@@ -16,6 +17,7 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
   const [wikiContent, setWikiContent] = useState('')
   const [draggingNode, setDraggingNode] = useState(null)
   const simRef = useRef(null)
+  const panningRef = useRef(null) // ponytail: { startX, startY, panX, panY } — pan de canvas
 
   const W = 1000, H = 700, cx = W / 2, cy = H / 2
 
@@ -83,22 +85,31 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
   }, [])
 
   const handleMouseMove = useCallback((e) => {
-    if (!draggingNode || !svgRef.current) return
-    const rect = svgRef.current.getBoundingClientRect()
-    const scaleX = W / rect.width
-    const scaleY = H / rect.height
-    const x = (e.clientX - rect.left) * scaleX
-    const y = (e.clientY - rect.top) * scaleY
-    // ponytail: update node position in sim
-    if (simRef.current) {
-      const node = simRef.current.nodes().find(n => n.id === draggingNode)
-      if (node) { node.fx = x; node.fy = y }
+    if (draggingNode && svgRef.current) {
+      const rect = svgRef.current.getBoundingClientRect()
+      const scaleX = W / rect.width
+      const scaleY = H / rect.height
+      const x = (e.clientX - rect.left) * scaleX
+      const y = (e.clientY - rect.top) * scaleY
+      // ponytail: update node position in sim
+      if (simRef.current) {
+        const node = simRef.current.nodes().find(n => n.id === draggingNode)
+        if (node) { node.fx = x; node.fy = y }
+      }
+      return
+    }
+    // ponytail: pan de canvas — drag del fondo mueve todo el SVG
+    if (panningRef.current) {
+      const dx = e.clientX - panningRef.current.startX
+      const dy = e.clientY - panningRef.current.startY
+      setPan({ x: panningRef.current.panX + dx, y: panningRef.current.panY + dy })
     }
   }, [draggingNode])
 
   const handleMouseUp = useCallback(() => {
     if (simRef.current) simRef.current.alphaTarget(0)
     setDraggingNode(null)
+    panningRef.current = null
   }, [])
 
   // ponytail: helpers
@@ -115,6 +126,13 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
 
   const nodeFill = (n) => {
     if (viewMode === 'neurons') return confidenceColor(n.confidence)
+    // ponytail: si un proyecto está seleccionado y este nodo está highlight, usar color del proyecto
+    if (highlightProject && isHighlighted(n.id) && n.id !== highlightProject) {
+      const proj = (projects || []).find(p => p.id === highlightProject)
+      if (proj) return proj.color
+      // ponytail: "individual" no está en projects array, color hardcodeado
+      if (highlightProject === 'individual') return '#808080'
+    }
     return n.color || (n.path ? 'var(--color-primary)' : 'var(--color-text-tertiary)')
   }
 
@@ -122,16 +140,30 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
 
   const isHighlighted = (nodeId) => {
     if (!highlightProject) return false
-    // ponytail: highlight nodes connected to selected project
-    return activeEdges.some(e =>
+    if (nodeId === highlightProject) return true
+    // ponytail: highlight directo + transitivo (proyecto → archivos → wikilinks)
+    const direct = activeEdges.some(e =>
       (e.source === highlightProject && e.target === nodeId) ||
       (e.target === highlightProject && e.source === nodeId)
-    ) || nodeId === highlightProject
+    )
+    if (direct) return true
+    // ponytail: transitivo — nodos conectados a archivos del proyecto
+    const projectFiles = new Set(
+      activeEdges.filter(e => e.source === highlightProject).map(e => e.target)
+    )
+    return activeEdges.some(e =>
+      projectFiles.has(e.source) && e.target === nodeId
+    )
   }
 
   const isEdgeHighlighted = (e) => {
     if (!highlightProject) return false
-    return e.source === highlightProject || e.target === highlightProject
+    if (e.source === highlightProject || e.target === highlightProject) return true
+    // ponytail: transitivo — edge entre archivo del proyecto y su wikilink
+    const projectFiles = new Set(
+      activeEdges.filter(e2 => e2.source === highlightProject).map(e2 => e2.target)
+    )
+    return projectFiles.has(e.source) || projectFiles.has(e.target)
   }
 
   // ponytail: handle project click from legend
@@ -145,8 +177,8 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
   const handleNodeClick = (n) => {
     if (viewMode === 'neurons') return
     if (n.type === 'project') {
-      const proj = (projects || []).find(p => p.id === n.id)
-      if (proj) handleProjectClick(proj)
+      const proj = (projects || []).find(p => p.id === n.id) || { id: n.id, name: n.title, color: n.color }
+      handleProjectClick(proj)
       return
     }
     if (!n.path) return
@@ -192,7 +224,8 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
           <svg
             ref={svgRef}
             viewBox={`0 0 ${W} ${H}`}
-            style={{ width: '100%', height: '100%', transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: draggingNode ? 'none' : 'transform var(--transition-base)', cursor: draggingNode ? 'grabbing' : 'grab' }}
+            style={{ width: '100%', height: '100%', transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: draggingNode || panningRef.current ? 'none' : 'transform var(--transition-base)', cursor: draggingNode ? 'grabbing' : 'grab' }}
+            onMouseDown={(e) => { panningRef.current = { startX: e.clientX, startY: e.clientY, panX: pan.x, panY: pan.y } }}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
@@ -210,8 +243,9 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
                 const s = positions[e.source], t = positions[e.target]
                 if (!s || !t) return null
                 const highlighted = isEdgeHighlighted(e)
-                // ponytail: edges blancos por defecto en ambos modos, color del proyecto si tiene
-                const stroke = e.color || '#ffffff'
+                // ponytail: edge color = color del proyecto si está highlight, sino e.color o blanco
+                const proj = highlightProject ? (highlightProject === 'individual' ? { color: '#808080' } : (projects || []).find(p => p.id === highlightProject)) : null
+                const stroke = highlighted && proj ? proj.color : (e.color || '#ffffff')
                 return <line key={i} x1={s.x} y1={s.y} x2={t.x} y2={t.y}
                   stroke={stroke}
                   strokeWidth={highlighted ? '2' : (viewMode === 'neurons' ? '1' : '0.75')}
@@ -300,6 +334,17 @@ function GrafoView({ nodes, edges, refreshKey, projects }) {
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#ffffff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{proj.name}</span>
                     </button>
                   ))}
+                  {/* ponytail: botón Individual en lista de proyectos */}
+                  <button onClick={() => handleProjectClick({ id: 'individual', name: 'Individual', color: '#808080' })} style={{
+                    display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: '6px 8px',
+                    borderRadius: 'var(--radius-sm)', cursor: 'pointer', textAlign: 'left',
+                    background: highlightProject === 'individual' ? 'rgba(173,198,255,0.1)' : 'transparent',
+                    border: highlightProject === 'individual' ? '1px solid rgba(173,198,255,0.2)' : '1px solid transparent',
+                    transition: 'all var(--transition-fast)',
+                  }}>
+                    <div style={{ width: 12, height: 12, borderRadius: 'var(--radius-full)', background: '#808080', boxShadow: '0 0 6px rgba(128,128,128,0.5)', flexShrink: 0 }} />
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: '#ffffff' }}>Individual</span>
+                  </button>
                 </div>
               </div>
             )}
@@ -405,22 +450,6 @@ function SidePanel({ selectedNode, selectedProject, wikiContent, onClose, onProj
     return () => { window.removeEventListener('mousemove', handleMove); window.removeEventListener('mouseup', handleUp) }
   }, [dragging])
 
-  // ponytail: simple markdown rendering — headers, bold, links, paragraphs
-  const renderMarkdown = (md) => {
-    if (!md) return null
-    const lines = md.split('\n')
-    const elements = []
-    let inList = false
-    lines.forEach((line, i) => {
-      if (line.startsWith('### ')) { if (inList) { inList = false }; elements.push(<h4 key={i} style={{ margin: '8px 0 4px', color: 'var(--color-text-primary)', fontSize: 14 }}>{line.slice(4)}</h4>) }
-      else if (line.startsWith('## ')) { if (inList) { inList = false }; elements.push(<h3 key={i} style={{ margin: '12px 0 6px', color: 'var(--color-text-primary)', fontSize: 16 }}>{line.slice(3)}</h3>) }
-      else if (line.startsWith('# ')) { if (inList) { inList = false }; elements.push(<h2 key={i} style={{ margin: '16px 0 8px', color: 'var(--color-primary)', fontSize: 20 }}>{line.slice(2)}</h2>) }
-      else if (line.startsWith('- ') || line.startsWith('* ')) { inList = true; elements.push(<div key={i} style={{ paddingLeft: '12px', color: 'var(--color-text-secondary)', fontSize: 13, lineHeight: 1.5 }}>• {line.slice(2)}</div>) }
-      else if (line.trim()) { inList = false; elements.push(<p key={i} style={{ margin: '4px 0', color: 'var(--color-text-secondary)', fontSize: 13, lineHeight: 1.6 }}>{line}</p>) }
-    })
-    return elements
-  }
-
   return (
     <div style={{
       width: panelWidth, flexShrink: 0, position: 'relative',
@@ -508,7 +537,7 @@ function SidePanel({ selectedNode, selectedProject, wikiContent, onClose, onProj
               {selectedNode.path}
             </div>
             <div style={{ borderTop: '1px solid var(--color-surface-high)', paddingTop: 'var(--space-3)' }}>
-              {wikiContent ? renderMarkdown(wikiContent) : <p style={{ color: 'var(--color-text-tertiary)', fontSize: 13 }}>Cargando…</p>}
+              {wikiContent ? <MarkdownViewer content={wikiContent} /> : <p style={{ color: 'var(--color-text-tertiary)', fontSize: 13 }}>Cargando…</p>}
             </div>
           </div>
         ) : null}

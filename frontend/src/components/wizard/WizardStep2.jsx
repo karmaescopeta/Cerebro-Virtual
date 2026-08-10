@@ -7,10 +7,10 @@ function WizardStep2({ formData, installLog, loading, statusMessage, onBack, onC
   return (
     <div className="wizard-root">
       <div className="wizard-progress-bar">
-        <div className="wizard-progress-fill" style={{ width: '66%' }} />
+        <div className="wizard-progress-fill" style={{ width: '75%' }} />
       </div>
       <div className="wizard-card">
-        <StepIndicator current={2} />
+        <StepIndicator current={3} />
 
         <div style={{ textAlign: 'center', marginBottom: 'var(--space-6)' }}>
           <h2 className="wizard-title">Resumen de Instalación</h2>

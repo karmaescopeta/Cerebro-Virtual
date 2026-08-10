@@ -1,0 +1,561 @@
+================================================================================
+PLAN DE EJECUCIÓN: CEREBRO VIRTUAL — Graphify + Multi-upload + Sistema de Proyectos
+================================================================================
+Fecha: 2026-07-26
+Proyecto: C:\proyectoBueno\cerebro virtual
+Modos: PONYTAIL + CAVEMAN activos
+Skill: cerebro-virtual (devops/)
+
+--------------------------------------------------------------------------------
+INSTRUCCIONES PARA LA SESIÓN NUEVA
+--------------------------------------------------------------------------------
+
+Carga el skill cerebro-virtual ANTES de tocar nada. Lee TODO el skill + el
+archivo PLAN-GRAPHIFY-INTEGRATION.md que ya existe en la raíz del proyecto.
+Este plan es la continuación de aquel. Ejecuta ambos en orden:
+
+1. PRIMERO: implementar Graphify (PLAN-GRAPHIFY-INTEGRATION.md)
+2. SEGUNDO: implementar multi-upload + sistema de proyectos (este archivo)
+
+Razón: el multi-upload genera graph.json como todo archivo subido. Si Graphify
+no está integrado primero, los uploads nuevos no generarán grafo "Neuronas".
+
+--------------------------------------------------------------------------------
+PARTE 1: GRAPHIFY (resumen — detalle completo en PLAN-GRAPHIFY-INTEGRATION.md)
+--------------------------------------------------------------------------------
+
+Objetivo: Graphify procesa todos los archivos (código + docs + PDFs + imágenes)
+y genera vault/system/graph.json con nodos, edges, confidence. El Sintetizador
+lee el JSON y genera wiki/<stem>.md legible. Dos grafos coexisten:
+
+- "Estructura": wikilinks de wiki/*.md (actual, sin cambios)
+- "Neuronas": graph.json de Graphify (nuevo)
+
+Backend OpenRouter + Gemma free para Pass 3 de Graphify. Pass 2 (Whisper) no se
+usa — Cerebro ya tiene Whisper. Pass 1 (tree-sitter) gratis.
+
+Chat: RAG combina texto de wiki/*.md + graph query de graph.json.
+
+Borrado: _prune_graph_json(source_file) limpia graph.json al borrar archivos.
+
+Ver PLAN-GRAPHIFY-INTEGRATION.md para el detalle completo y el prompt de
+ejecución de esta parte.
+
+--------------------------------------------------------------------------------
+PARTE 2: MULTI-UPLOAD + SISTEMA DE PROYECTOS
+--------------------------------------------------------------------------------
+
+OBJETIVO
+========
+1. Chat: permitir subir varios archivos a la vez (no uno solo).
+2. Tab Cerebro: botón "Añadir archivos" → popup con 2 opciones:
+   a) Añadir archivos individuales (sin proyecto)
+   b) Añadir archivos a proyecto (nuevo o existente)
+3. Sistema de proyectos con metadata (vault/system/projects.json).
+
+DISEÑO
+======
+
+Sistema de proyectos (Opción B confirmada por el usuario):
+- vault/system/projects.json: lista de proyectos con metadata.
+- Cada proyecto: {id, name, description, created, color}
+- id = slug (ej: "fotosintesis"). name = legible ("Fotosíntesis").
+- raw/<project_id>/ contiene los archivos del proyecto.
+- "Archivos individuales" van a raw/individual/ (sin proyecto).
+
+Estructura de archivos tras implementación:
+```
+vault/
+├── raw/
+│   ├── fotosintesis/          ← archivos del proyecto "Fotosíntesis"
+│   │   ├── paper.pdf
+│   │   └── notas.txt
+│   ├── cerebro-virtual/       ← archivos del proyecto "Cerebro Virtual"
+│   │   └── diagrama.png
+│   └── individual/            ← archivos sin proyecto
+│       └── suelto.txt
+└── system/
+    ├── projects.json          ← metadata de proyectos
+    ├── graph.json             ← grafo de Graphify ( Parte 1)
+    └── ... (archivos existentes)
+```
+
+Formato de projects.json:
+```json
+{
+  "projects": [
+    {
+      "id": "fotosintesis",
+      "name": "Fotosíntesis",
+      "description": "Estudio del proceso fotosintético",
+      "created": "2026-07-26T12:00:00Z",
+      "color": "#4edea3"
+    }
+  ]
+}
+```
+
+Si projects.json no existe, crear con {"projects": []}.
+
+CAMBIOS DE BACKEND (backend/app/main.py)
+========================================
+
+1. Helpers de proyectos:
+
+```python
+import uuid
+from datetime import datetime
+
+PROJECTS_PATH = "vault/system/projects.json"
+
+def load_projects():
+    if not os.path.exists(PROJECTS_PATH):
+        return {"projects": []}
+    with open(PROJECTS_PATH) as f:
+        return json.load(f)
+
+def save_projects(data):
+    os.makedirs("vault/system", exist_ok=True)
+    with open(PROJECTS_PATH, "w") as f:
+        json.dump(data, f, indent=2)
+
+def _slugify(name):
+    # ponytail: slug simple, stdlib. Si se necesita algo más robusto, usar python-slugify.
+    import re
+    slug = name.lower().strip()
+    slug = re.sub(r'[^a-z0-9]+', '-', slug).strip('-')
+    return slug or f"proyecto-{uuid.uuid4().hex[:8]}"
+```
+
+2. Nuevo endpoint: GET /api/projects
+
+Devuelve la lista de proyectos para el dropdown de "proyecto existente".
+
+```python
+@app.get("/api/projects")
+def list_projects():
+    return load_projects()
+```
+
+3. Nuevo endpoint: POST /api/projects
+
+Crea un proyecto nuevo. Recibe name, description, color. Genera id + created.
+
+```python
+@app.post("/api/projects")
+def create_project(name: str, description: str = "", color: str = "#4edea3"):
+    data = load_projects()
+    project_id = _slugify(name)
+    # verificar id único
+    if any(p["id"] == project_id for p in data["projects"]):
+        project_id = f"{project_id}-{uuid.uuid4().hex[:4]}"
+    project = {
+        "id": project_id,
+        "name": name,
+        "description": description,
+        "created": datetime.utcnow().isoformat() + "Z",
+        "color": color
+    }
+    data["projects"].append(project)
+    save_projects(data)
+    os.makedirs(f"raw/{project_id}", exist_ok=True)
+    return project
+```
+
+4. Nuevo endpoint: DELETE /api/projects/<project_id>
+
+Borra un proyecto. Borra su carpeta raw/<id>/ + su entrada en projects.json.
+NO borra wiki/ ni graph.json (eso se limpia con _prune_graph_json por archivo).
+
+```python
+@app.delete("/api/projects/{project_id}")
+def delete_project(project_id: str):
+    data = load_projects()
+    data["projects"] = [p for p in data["projects"] if p["id"] != project_id]
+    save_projects(data)
+    # borrar carpeta raw/<id>/
+    import shutil
+    project_dir = f"raw/{project_id}"
+    if os.path.exists(project_dir):
+        # borrar cada archivo + limpiar graph.json
+        for fname in os.listdir(project_dir):
+            _delete_vault_item("raw", f"{project_id}/{fname}")
+        os.rmdir(project_dir)
+    return {"ok": True}
+```
+
+5. Modificar POST /api/vault/upload para soportar múltiples archivos:
+
+Estado actual: recibe un solo archivo (campo "file") + ?topic=<t>.
+Nuevo: soportar múltiples archivos en una sola petición.
+
+Opción A (más simple): el frontend hace N peticiones POST /api/vault/upload,
+una por archivo. El backend no cambia. YAGNI.
+
+Opción B: el backend acepta multipart con múltiples archivos (List[UploadFile]).
+Menos peticiones pero más código backend.
+
+RECOMENDACIÓN PONYTAIL: Opción A. El frontend itera y hace N fetch(). El
+backend no cambia. Si el usuario sube 10 archivos, son 10 POST. No hay
+overhead real (no hay transacción que abarcar). Si uno falla, los demás
+siguen subiendo. Más resiliente.
+
+CONFIRMADO: Opción A. El backend de /api/vault/upload NO cambia. El frontend
+itera.
+
+6. Modificar POST /api/vault/upload para aceptar ?project=<id>:
+
+Estado actual: ?topic=<t> → raw/<topic>/<file>
+Nuevo: ?project=<id> → raw/<project_id>/<file>
+      ?project=individual → raw/individual/<file>
+      (sin ?project ni ?topic) → raw/individual/<file> (default)
+
+El parámetro ?topic= queda deprecated pero funcional (compatibilidad).
+Si llegan ambos, ?project gana.
+
+```python
+@app.post("/api/vault/upload")
+async def upload_file(file: UploadFile, project: str = "individual", topic: str = None):
+    # compat: si llega topic y no project, usar topic como project
+    dest = project or topic or "individual"
+    # ... resto del flujo igual (extraer texto + Graphify + Sintetizador)
+```
+
+CAMBIOS DE FRONTEND
+===================
+
+1. ChatView: multi-upload
+------------------------
+
+Estado actual: input de archivo único. Drag-drop de un archivo.
+Nuevo: input con multiple. Drag-drop de varios archivos.
+
+Cambios en el componente de chat (buscar ChatView o handleFileUpload):
+
+```jsx
+// input
+<input type="file" multiple onChange={handleFileUpload} />
+
+// handler
+const handleFileUpload = async (files) => {
+  // files es FileList (puede tener 1 o N)
+  for (const file of files) {
+    const formData = new FormData();
+    formData.append('file', file);
+    await fetch('/api/vault/upload?project=individual', {
+      method: 'POST',
+      body: formData
+    });
+    // mostrar chip por archivo
+  }
+  // mensaje al Coordinador: "El usuario ha subido N archivos..."
+};
+```
+
+Drag-drop: el evento drop trae e.dataTransfer.files (FileList con N).
+Iterar igual.
+
+2. Tab Cerebro: botón "Añadir archivos" + popup
+-----------------------------------------------
+
+En la vista de Cerebro (CerebroView o similar), añadir botón arriba:
+
+```
+┌──────────────────────────────────────┐
+│  🧬 Cerebro                          │
+│  ┌──────────────┐                    │
+│  │ + Añadir archivos │  ← botón     │
+│  └──────────────┘                    │
+│─────────────────────────────────────│
+│  Raw | Outputs  (sub-tabs actuales)  │
+│  ...                                 │
+└──────────────────────────────────────┘
+```
+
+Al clickar el botón, aparece un popup/modal con 2 opciones:
+
+```
+┌─────────────────────────────────────┐
+│         Añadir archivos             │
+│                                     │
+│  ┌───────────────┐  ┌─────────────┐ │
+│  │  📄 Individual │  │ 📁 Proyecto │ │
+│  │               │  │             │ │
+│  │ Sin proyecto  │  │ A un        │ │
+│  │               │  │ proyecto    │ │
+│  └───────────────┘  └─────────────┘ │
+└─────────────────────────────────────┘
+```
+
+3. Flujo "Individual":
+   - Click en "Individual" → popup cambia a file picker (input multiple).
+   - Usuario selecciona N archivos.
+   - Frontend itera: POST /api/vault/upload?project=individual por cada uno.
+   - Popup cierra. Lista de Raw recarga.
+
+4. Flujo "Proyecto":
+   - Click en "Proyecto" → popup muestra 2 sub-opciones:
+
+```
+┌─────────────────────────────────────┐
+│         Añadir a proyecto           │
+│                                     │
+│  ┌───────────────┐  ┌─────────────┐ │
+│  │ + Nuevo        │  │ Existente   │ │
+│  │   proyecto    │  │             │ │
+│  └───────────────┘  └─────────────┘ │
+└─────────────────────────────────────┘
+```
+
+5. Flujo "Nuevo proyecto":
+   - Form inline: nombre, descripción (opcional), color (opcional, default).
+   - POST /api/projects (crea proyecto, devuelve id).
+   - Luego file picker (input multiple).
+   - Usuario selecciona N archivos.
+   - Frontend itera: POST /api/vault/upload?project=<new_id> por cada uno.
+   - Popup cierra. Lista recarga.
+
+6. Flujo "Proyecto existente":
+   - Dropdown con lista de proyectos (GET /api/projects).
+   - Usuario selecciona uno.
+   - File picker (input multiple).
+   - Frontend ittera: POST /api/vault/upload?project=<selected_id> por cada uno.
+   - Popup cierra. Lista recarga.
+
+7. Componente del popup:
+   - Un solo componente: AddFilesPopup.jsx (o inline en CerebroView).
+   - State machine: step = 'choose' | 'individual' | 'project-choose' | 'project-new' | 'project-existing' | 'uploading'.
+   - Transiciones:
+     choose → individual → file picker → uploading → close
+     choose → project-choose → project-new → form + file picker → uploading → close
+     choose → project-choose → project-existing → dropdown + file picker → uploading → close
+
+```
+         ┌── choose ──┐
+         │            │
+    individual    project-choose
+         │            │
+    file picker    ┌──┴──┐
+         │        │      │
+    uploading  project-new  project-existing
+         │        │              │
+       close  form+picker    dropdown+picker
+                  │              │
+              uploading      uploading
+                  │              │
+                close          close
+```
+
+8. Visualización de proyectos en la lista de Raw:
+   - Actual: Raw muestra archivos planos.
+   - Nuevo: Raw muestra proyectos como carpetas expandibles.
+   - "Individual" es una carpeta más (raw/individual/).
+   - Al expandir un proyecto, ver sus archivos.
+   - Color del proyecto (de projects.json) como accent.
+
+Ejemplo:
+```
+Raw
+├── 📁 Fotosíntesis          (3 archivos)
+│   ├── paper.pdf
+│   ├── notas.txt
+│   └── resumen.md
+├── 📁 Cerebro Virtual       (1 archivo)
+│   └── diagrama.png
+└── 📁 Individual            (2 archivos)
+    ├── suelto.txt
+    └── otro.pdf
+```
+
+9. Borrar proyecto entero:
+   - En la lista de Raw, cada proyecto tiene un botón de borrar (junto a los
+     archivos individuales que ya existen).
+   - DELETE /api/projects/<id> borra carpeta + metadata + limpia graph.json
+     por cada archivo.
+   - Confirmación: "¿Borrar proyecto X y todos sus archivos?"
+
+LO QUE NO SE HACE
+=================
+
+- No crear sistema de tags. Los proyectos ya organizan. YAGNI tags.
+- No crear sistema de carpetas anidadas. raw/<project_id>/ es plano. Si un
+  proyecto necesita subcarpetas, es un proyecto distinto.
+- No crear sistema de permisos por proyecto. Es un cerebro personal. YAGNI.
+- No crear sistema de versiones de archivos. El vault es append-only por
+  ahora. Si se sube un archivo con el mismo nombre, se sobreescribe (como
+  ahora).
+- No crear endpoint de "mover archivo entre proyectos". Si el usuario quiere
+  mover, borra y sube de nuevo. YAGNI hasta que lo pida.
+- No crear API de búsqueda dentro de un proyecto. El chat ya busca en todo
+  el vault. Filtro por proyecto = YAGNI hasta que lo pida.
+- No crear sistema de plantillas de proyecto. YAGNI.
+- No cambiar el backend de /api/vault/upload para multi-archivo en una sola
+  petición. El frontend itera (Opción A). Más resiliente y menos código.
+
+VERIFICACIÓN POST-IMPLEMENTACIÓN
+================================
+
+1. POST /api/projects con name="Fotosíntesis" → devuelve {id:"fotosintesis", ...}.
+2. GET /api/projects → lista el proyecto creado.
+3. POST /api/vault/upload?project=fotosintesis + archivo → raw/fotosintesis/<file>.
+4. POST /api/vault/upload?project=individual + archivo → raw/individual/<file>.
+5. POST /api/vault/upload (sin ?project) → raw/individual/<file> (default).
+6. Tab Cerebro → botón "Añadir archivos" → popup → "Individual" → subir 3
+   archivos a la vez → los 3 aparecen en raw/individual/.
+7. Tab Cerebro → botón "Añadir archivos" → popup → "Proyecto" → "Nuevo" →
+   crear proyecto "Bioquímica" → subir 2 archivos → aparecen en raw/bioquimica/.
+8. Tab Cerebro → botón "Añadir archivos" → popup → "Proyecto" → "Existente"
+   → dropdown muestra "Fotosíntesis" y "Bioquímica" → seleccionar
+   "Fotosíntesis" → subir 1 archivo → aparece en raw/fotosintesis/.
+9. Chat: arrastrar 3 archivos a la vez → los 3 se suben a raw/individual/ →
+   3 chips aparecen en el chat.
+10. Lista de Raw muestra proyectos como carpetas expandibles con color.
+11. Borrar proyecto "Bioquímica" → carpeta raw/bioquimica/ borrada +
+    projects.json actualizado + graph.json limpiado.
+12. Borrar un archivo individual desde la lista → graph.json limpiado
+    (_prune_graph_json).
+13. npm run build — sin errores.
+14. docker compose up -d --build frontend → navegador prueba todo.
+
+ORDEN DE IMPLEMENTACIÓN
+=======================
+
+1. PRIMERO: Graphify (PLAN-GRAPHIFY-INTEGRATION.md)
+   - Contenedor cerebro-herramientas con Graphify.
+   - Backend: pipeline upload + Graphify + endpoints /api/graph/*.
+   - Frontend: GrafoView toggle Estructura/Neuronas.
+   - Chat: RAG ampliado.
+   - Borrado: _prune_graph_json.
+
+2. SEGUNDO: Sistema de proyectos + multi-upload (este plan)
+   - Backend: projects.json + endpoints /api/projects (GET, POST, DELETE).
+   - Backend: /api/vault/upload acepta ?project=<id>.
+   - Frontend: ChatView multi-upload (input multiple + drag-drop N archivos).
+   - Frontend: CerebroView botón "Añadir archivos" + popup (AddFilesPopup).
+   - Frontend: lista de Raw muestra proyectos como carpetas.
+   - Frontend: borrar proyecto entero.
+
+3. TERCERO: Verificación end-to-end completa
+   - Subir archivo individual → raw/individual/ + graph.json + wiki.
+   - Crear proyecto → subir archivos a proyecto → raw/<id>/ + graph.json + wiki.
+   - Borrar archivo → graph.json limpiado.
+   - Borrar proyecto → carpeta + metadata + graph.json limpiados.
+   - Chat con archivos subidos → RAG funciona.
+   - Grafo Estructura + Neuronas actualizados.
+
+PROMPT PARA EJECUTAR EN OTRA SESIÓN
+===================================
+
+Sesión de desarrollo sobre Cerebro Virtual (proyecto en C:\proyectoBueno\cerebro virtual).
+PONYTAIL + CAVEMAN activos. Skill cerebro-virtual cargada.
+
+TAREA: Implementar dos features en orden:
+
+== FASE 1: Graphify (ver PLAN-GRAPHIFY-INTEGRATION.md para detalle completo) ==
+
+Lee el archivo PLAN-GRAPHIFY-INTEGRATION.md en la raíz del proyecto. Ejecuta
+el prompt que está al final de ese archivo. Resume:
+
+- Graphify en cerebro-herramientas (Pass 1 código + Pass 3 docs con OpenRouter+Gemma free).
+- Backend: pipeline upload ejecuta Graphify + endpoints /api/graph/full y /api/graph/query.
+- Frontend: GrafoView toggle Estructura/Neuronas.
+- Chat: RAG ampliado (texto wiki + graph query).
+- Borrado: _prune_graph_json limpia graph.json al borrar archivos.
+
+Verifica Fase 1 antes de pasar a Fase 2.
+
+== FASE 2: Sistema de proyectos + multi-upload ==
+
+CONTEXTO:
+- Hoy el frontend sube archivos con ?topic=<t> a raw/<topic>/<file>.
+- No hay concepto de "proyecto" con metadata. Solo carpetas topic.
+- El chat sube archivos uno a uno (input single, drag-drop single).
+- La tab Cerebro lista raw/ y outputs/ sin botón de añadir.
+
+DECISIONES YA TOMADAS (NO re-abrir):
+- Proyecto = entidad con metadata (projects.json en vault/system/). No solo carpeta.
+- projects.json: {projects: [{id, name, description, created, color}]}.
+- "Individual" = carpeta raw/individual/ para archivos sin proyecto.
+- Multi-upload: el frontend itera N POST /api/vault/upload. El backend no
+  cambia para multi-archivo (Opción A, no Opción B). Más resiliente.
+- El popup de "Añadir archivos" incluye el file picker integrado. Todo en un flujo.
+- No sistema de tags, no carpetas anidadas, no permisos, no versiones, no mover
+  entre proyectos, no búsqueda por proyecto, no plantillas. YAGNI todo.
+
+PASOS:
+
+1. Lee el skill cerebro-virtual. Entiende el flujo actual de /api/vault/upload
+   y el CerebroView en el frontend.
+
+2. Backend: sistema de proyectos en backend/app/main.py:
+   a. Helpers: load_projects(), save_projects(), _slugify(name).
+   b. GET /api/projects → lista proyectos de vault/system/projects.json.
+   c. POST /api/projects → crea proyecto (name, description, color). Genera id+created.
+   d. DELETE /api/projects/{project_id} → borra carpeta raw/<id>/ + metadata +
+      llama _prune_graph_json por cada archivo.
+   e. Modificar POST /api/vault/upload: aceptar ?project=<id>. Default: individual.
+      Compat: si llega ?topic y no ?project, usar topic como project.
+
+3. Frontend: ChatView multi-upload:
+   a. Input type="file" multiple.
+   b. Drag-drop: e.dataTransfer.files (FileList con N).
+   c. Handler itera: POST /api/vault/upload?project=individual por cada file.
+   d. Mostrar chip por archivo subido.
+   e. Mensaje al Coordinador: "El usuario ha subido N archivos a individual. Procésalos si es necesario."
+
+4. Frontend: CerebroView botón "Añadir archivos" + popup:
+   a. Botón "+ Añadir archivos" arriba de la lista de Raw.
+   b. Componente AddFilesPopup (inline o separado):
+      - State machine: choose → individual | project-choose → project-new | project-existing.
+      - "Individual": file picker (multiple) → POST /api/vault/upload?project=individual ×N.
+      - "Nuevo proyecto": form (name, description, color) → POST /api/projects →
+        file picker → POST /api/vault/upload?project=<new_id> ×N.
+      - "Existente": GET /api/projects → dropdown → seleccionar →
+        file picker → POST /api/vault/upload?project=<selected_id> ×N.
+      - Cerrar popup tras subir. Recargar lista de Raw.
+   c. Lista de Raw muestra proyectos como carpetas expandibles (con color de projects.json).
+   d. "Individual" es una carpeta más.
+   e. Borrar proyecto: botón junto a cada proyecto → DELETE /api/projects/<id>
+      → confirmación → recargar.
+
+5. Actualiza el skill cerebro-virtual:
+   - references/projects-and-upload.md con diseño de proyectos, flujo del popup,
+     endpoints nuevos.
+   - SKILL.md: añadir /api/projects (GET, POST, DELETE), /api/vault/upload?project=,
+     actualzar sección de CerebroView.
+   - Añadir vault/system/projects.json al diagrama del vault.
+
+6. Verifica end-to-end (Fase 2):
+   - POST /api/projects name="Test" → devuelve proyecto.
+   - GET /api/projects → lista el proyecto.
+   - POST /api/vault/upload?project=test + archivo → raw/test/<file>.
+   - POST /api/vault/upload?project=individual + archivo → raw/individual/<file>.
+   - Tab Cerebro → botón "Añadir archivos" → Individual → subir 3 archivos → en raw/individual/.
+   - Tab Cerebro → botón → Proyecto → Nuevo → "Bioquímica" → subir 2 → en raw/bioquimica/.
+   - Tab Cerebro → botón → Proyecto → Existente → dropdown → "Test" → subir 1 → en raw/test/.
+   - Chat: arrastrar 3 archivos → 3 chips.
+   - Lista Raw muestra carpetas con color.
+   - Borrar proyecto → carpeta + metadata + graph.json limpiados.
+   - npm run build.
+   - docker compose up -d --build frontend.
+
+REGLAS:
+- Shortest working diff. No reescribir CerebroView entero.
+- AddFilesPopup: un solo componente con state machine, no 5 componentes.
+- Multi-upload: frontend itera, backend no cambia.
+- No añadir tags, anidadas, permisos, versiones, mover, búsqueda por proyecto.
+- Si un archivo falla al subir, los demás siguen (no parar el loop).
+- Ponytail: stdlib primero. _slugify con re, no con lib externa.
+- projects.json se crea al primer POST /api/projects si no existe.
+
+ENTREGABLE:
+- Sistema de proyectos funcional (projects.json + endpoints).
+- Chat con multi-upload.
+- CerebroView con botón "Añadir archivos" + popup completo.
+- Lista de Raw con proyectos como carpetas.
+- Skill cerebro-virtual actualizado.
+- Report: qué cambiaste, qué skipaste (YAGNI), verificación end-to-end.
+
+================================================================================
+FIN DEL PLAN
+================================================================================

@@ -1,0 +1,23 @@
+{
+  "agentName": "Dario",
+  "personality": "Eres un asistente de IA t\u00e9cnico y preciso. Respondes con claridad, priorizando el c\u00f3digo, la arquitectura de sistemas y la resoluci\u00f3n de problemas estructurada.",
+  "apiKey": "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",
+  "modelMode": "openrouter",
+  "channels": {
+    "web": true,
+    "telegram": false,
+    "whatsapp": false,
+    "discord": false
+  },
+  "dashboard": {
+    "user": "admin",
+    "password": "admin1234"
+  },
+  "channelTokens": {
+    "telegram": "",
+    "discord": "",
+    "whatsapp": ""
+  },
+  "createdAt": "2026-07-30T13:38:01.607958",
+  "updatedAt": "2026-07-30T13:38:01.607970"
+}

@@ -1,3 +1,39 @@
 {
-  "projects": []
+  "projects": [
+    {
+      "id": "documentacion-maikel",
+      "name": "documentacion maikel",
+      "description": "",
+      "created": "2026-07-30T13:42:54.951236Z",
+      "color": "#884edf"
+    },
+    {
+      "id": "aviones",
+      "name": "Aviones Test",
+      "description": "",
+      "created": "2026-08-10T01:52:30.958861Z",
+      "color": "#ff0000"
+    },
+    {
+      "id": "test-struct-verify",
+      "name": "Test Struct",
+      "description": "",
+      "created": "2026-08-10T01:53:06.442037Z",
+      "color": "#00ffbf"
+    },
+    {
+      "id": "verify-struct-final",
+      "name": "Verify Final",
+      "description": "",
+      "created": "2026-08-10T01:53:31.112104Z",
+      "color": "#c0de17"
+    },
+    {
+      "id": "proyecto2",
+      "name": "Proyecto 2",
+      "description": "",
+      "created": "2026-08-10T02:02:12.745999Z",
+      "color": "#123456"
+    }
+  ]
 }

@@ -8,7 +8,7 @@ function WizardStep3({ formData, onComplete }) {
         <div className="wizard-progress-fill" style={{ width: '100%' }} />
       </div>
       <div className="wizard-card completion-screen">
-        <StepIndicator current={3} />
+        <StepIndicator current={4} />
 
         <div className="completion-icon-wrapper">
           <div className="completion-icon-glow" />

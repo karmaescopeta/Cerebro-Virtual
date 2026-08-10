@@ -1,0 +1,7 @@
+model: deepseek/deepseek-v4-flash
+temperature: 0.2
+skills:
+  - file
+  - terminal
+terminal:
+  cwd: /app/vault

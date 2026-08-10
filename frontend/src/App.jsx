@@ -8,7 +8,9 @@ import DashboardView from './components/views/DashboardView'
 import ChatView from './components/views/ChatView'
 import CerebroView from './components/views/CerebroView'
 import GrafoView from './components/views/GrafoView'
+import ModelosView from './components/views/ModelosView'
 import AjustesView from './components/views/AjustesView'
+import ExportPopup from './components/shared/ExportPopup'
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -25,6 +27,13 @@ function App() {
   const [chatUploading, setChatUploading] = useState(false)
   const [chatDragOver, setChatDragOver] = useState(false)
   const [chatMessages, setChatMessages] = useState([])
+  const [activeSessionId, setActiveSessionId] = useState(null)
+  const [sessions, setSessions] = useState([])
+  const [chatSmart, setChatSmart] = useState(false)
+  const [cerebroMode, setCerebroMode] = useState(false)
+  const [internetMode, setInternetMode] = useState(false)
+  const [investigationMode, setInvestigationMode] = useState(false)
+  const [selectedMessages, setSelectedMessages] = useState([])
   const fileInputRef = useRef(null)
 
   // Agent keys
@@ -50,7 +59,7 @@ function App() {
   const [projects, setProjects] = useState([])
 
   // Cerebro
-  const [cerebroSubtab, setCerebroSubtab] = useState('raw')
+  const [cerebroSubtab, setCerebroSubtab] = useState('estructura')
   const [rawFiles, setRawFiles] = useState([])
   const [outputFiles, setOutputFiles] = useState([])
   const [cerebroSearch, setCerebroSearch] = useState('')
@@ -61,10 +70,12 @@ function App() {
   const [vaultMessage, setVaultMessage] = useState('')
   const [vaultMessageType, setVaultMessageType] = useState('')
   const [vaultImporting, setVaultImporting] = useState(false)
+  const [showExportPopup, setShowExportPopup] = useState(false)
   const importFileRef = useRef(null)
 
   useEffect(() => { checkConfiguration() }, [])
   useEffect(() => { if (activeTab === 'cerebro') loadCerebroFiles() }, [activeTab])
+  useEffect(() => { if (activeTab === 'chat' && isConfigured) loadSessions() }, [activeTab, isConfigured])
 
   // === Data loading ===
   async function checkConfiguration() {
@@ -164,6 +175,81 @@ function App() {
     } catch { alert('Error al subir') } finally { setChatUploading(false) }
   }
 
+  // === Chat Sessions ===
+  async function loadSessions() {
+    try {
+      const res = await fetch('/api/chat/sessions')
+      const data = await res.json()
+      setSessions(data.sessions || [])
+      // ponytail: cargar la sesión lastActive o crear una nueva
+      const active = (data.sessions || []).find(s => s.lastActive)
+      if (active) {
+        await switchToSession(active.id)
+      } else if ((data.sessions || []).length === 0) {
+        await createNewSession()
+      } else {
+        await switchToSession(data.sessions[0].id)
+      }
+    } catch {}
+  }
+
+  async function switchToSession(id) {
+    try {
+      const res = await fetch(`/api/chat/sessions/${id}`)
+      const data = await res.json()
+      setActiveSessionId(id)
+      setChatMessages(data.messages || [])
+      // marcar como activa en backend
+      await fetch(`/api/chat/sessions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ lastActive: true }) })
+      // refrescar lista
+      const listRes = await fetch('/api/chat/sessions')
+      setSessions((await listRes.json()).sessions || [])
+    } catch {}
+  }
+
+  async function createNewSession() {
+    try {
+      const res = await fetch('/api/chat/sessions', { method: 'POST' })
+      const data = await res.json()
+      setActiveSessionId(data.id)
+      setChatMessages([])
+      setInvestigationMode(false)
+      setSelectedMessages([])
+      const listRes = await fetch('/api/chat/sessions')
+      setSessions((await listRes.json()).sessions || [])
+    } catch {}
+  }
+
+  async function deleteSession(id) {
+    try {
+      await fetch(`/api/chat/sessions/${id}`, { method: 'DELETE' })
+      const listRes = await fetch('/api/chat/sessions')
+      const list = (await listRes.json()).sessions || []
+      setSessions(list)
+      if (activeSessionId === id) {
+        if (list.length > 0) {
+          await switchToSession(list[0].id)
+        } else {
+          await createNewSession()
+        }
+      }
+    } catch {}
+  }
+
+  async function renameSession(id, title) {
+    try {
+      await fetch(`/api/chat/sessions/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title }) })
+      const listRes = await fetch('/api/chat/sessions')
+      setSessions((await listRes.json()).sessions || [])
+    } catch {}
+  }
+
+  function computeMode() {
+    if (cerebroMode) return internetMode ? 'cerebro+internet' : 'cerebro'
+    if (chatSmart) return 'smart'
+    return 'default'
+  }
+
   async function handleSendChat() {
     if (!chatMessage.trim() && !chatAttachedFile) return
     setChatLoading(true)
@@ -172,35 +258,72 @@ function App() {
       const note = `El usuario ha subido el archivo «${chatAttachedFile.name}» que ya está guardado en raw/individual/${chatAttachedFile.name}. Procésalo si es necesario.`
       msg = msg ? `${msg}\n\n${note}` : note
     }
+    const mode = computeMode()
     setChatMessages(p => [...p, { role: 'user', content: msg, attachment: chatAttachedFile }])
     try {
-      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })
-      let txt = ''
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: activeSessionId, mode }) })
+      let txt = '', ctx = null
       if (!res.ok) { const e = await res.json().catch(() => ({})); txt = 'Error: ' + (e.detail || e.message || `HTTP ${res.status}`) }
-      else { const d = await res.json(); txt = d.response || d.message || d.reply || 'Sin respuesta' }
-      setChatMessages(p => [...p, { role: 'assistant', content: txt }])
+      else { const d = await res.json(); txt = d.response || 'Sin respuesta'; ctx = d.context || null }
+      setChatMessages(p => [...p, { role: 'assistant', content: txt, context: ctx, _originalQuery: msg }])
       setChatMessage(''); setChatAttachedFile(null)
+      // refrescar lista de sesiones (título auto-actualizado)
+      const listRes = await fetch('/api/chat/sessions')
+      setSessions((await listRes.json()).sessions || [])
     } catch {
+      setChatMessages(p => [...p, { role: 'assistant', content: 'Error al conectar con ' + (editAgentName || 'Hermes') }])
+    } finally { setChatLoading(false) }
+  }
+
+  // ponytail: investigar — mensajes seleccionados → investigador → resumen + doc completo
+    async function handleInvestigate(selectedMsgs) {
+      const msgs = selectedMsgs.map(idx => chatMessages[idx]).filter(m => m)
+      if (!msgs.length) return
+      setChatLoading(true)
+      setChatMessages(p => [...p, { role: 'user', content: `🔍 Investigar (${msgs.length} mensajes)` }])
       try {
-        const d = await (await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg }) })).json()
-        setChatMessages(p => [...p, { role: 'assistant', content: d.response || 'Sin respuesta' }])
-        setChatMessage(''); setChatAttachedFile(null)
-      } catch { setChatMessages(p => [...p, { role: 'assistant', content: 'Error al conectar con ' + (editAgentName || 'Hermes') }]) }
+        const res = await fetch('/api/chat/investigate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: msgs, session_id: activeSessionId }) })
+        const d = await res.json()
+        setChatMessages(p => [...p, { role: 'assistant', content: d.response || 'Sin respuesta', fullDoc: d.full_doc || d.response || '', context: d.context || null, _originalQuery: 'investigacion' }])
+      } catch {
+        setChatMessages(p => [...p, { role: 'assistant', content: 'Error al investigar' }])
+      } finally { setChatLoading(false); setInvestigationMode(false); setSelectedMessages([]) }
+    }
+
+  // ponytail: guardar output en el cerebro
+  async function handleSaveOutput(content, projectId, name, description) {
+    setChatLoading(true)
+    try {
+      const res = await fetch('/api/vault/save-output', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, project_id: projectId, name, description }) })
+      const d = await res.json()
+      if (d.status === 'saved') {
+        setChatMessages(p => [...p, { role: 'assistant', content: `✅ **Guardado en el cerebro.**\n\n- Archivo: \`${d.path}\`\n- Wiki: \`${d.wiki_path}\`\n- Grafo actualizado: ${d.graph_updated ? '✓' : '✗'}` }])
+        await loadWikiGraph(); await loadData()
+      }
+    } catch {
+      setChatMessages(p => [...p, { role: 'assistant', content: 'Error al guardar' }])
     } finally { setChatLoading(false) }
   }
 
   // === Cerebro ===
-  async function handleCerebroDelete() {
-    const items = Object.entries(cerebroSelected).filter(([, v]) => v).map(([k]) => { const [cat, ...p] = k.split('|'); return { category: cat, path: p.join('|') } })
-    if (!items.length) return
-    if (!confirm(`¿Eliminar ${items.length} archivo(s)?`)) return
-    setCerebroDeleting(true)
-    try {
-      const d = await (await fetch('/api/vault/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(items) })).json()
-      if (d.errors?.length) alert('Errores: ' + d.errors.map(e => e.path).join(', '))
-      setCerebroSelected({}); await loadCerebroFiles(); await loadWikiGraph()
-    } catch {} finally { setCerebroDeleting(false) }
-  }
+    async function handleCerebroDelete() {
+      // ponytail: keys = "estructura|raw|path" o "raw|path" o "outputs|path"
+      const items = Object.entries(cerebroSelected).filter(([, v]) => v).map(([k]) => {
+        const parts = k.split('|')
+        // si primer parte es 'estructura', la segunda es la category real
+        const category = parts[0] === 'estructura' ? parts[1] : parts[0]
+        const path = parts[0] === 'estructura' ? parts.slice(2).join('|') : parts.slice(1).join('|')
+        return { category, path }
+      })
+      if (!items.length) return
+      if (!confirm(`¿Eliminar ${items.length} archivo(s)?`)) return
+      setCerebroDeleting(true)
+      try {
+        const d = await (await fetch('/api/vault/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(items) })).json()
+        if (d.errors?.length) alert('Errores: ' + d.errors.map(e => e.path).join(', '))
+        setCerebroSelected({}); await loadCerebroFiles(); await loadWikiGraph(); await loadProjects()
+      } catch {} finally { setCerebroDeleting(false) }
+    }
 
   // === Settings handlers ===
   async function handleSaveHermesKey() {
@@ -245,13 +368,14 @@ function App() {
     try { await fetch('/api/init/reset', { method: 'DELETE' }); window.location.reload() } catch { alert('Error') }
   }
 
-  async function handleExportVault() {
+  async function handleExportVault(name) {
     setVaultMessage('⏳ Exportando...'); setVaultMessageType('info')
     try {
       const blob = await (await fetch('/api/vault/export')).blob()
       const url = URL.createObjectURL(blob)
-      const a = document.createElement('a'); a.href = url; a.download = 'vault-export.tar.gz'; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
+      const a = document.createElement('a'); a.href = url; a.download = `${name}.tar.gz`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url)
       setVaultMessage('✅ Exportado'); setVaultMessageType('success')
+      setTimeout(() => setShowExportPopup(false), 1000)
     } catch { setVaultMessage('❌ Error'); setVaultMessageType('error') }
   }
 
@@ -261,7 +385,11 @@ function App() {
     try {
       const fd = new FormData(); fd.append('file', file)
       const d = await (await fetch('/api/vault/import', { method: 'POST', body: fd })).json()
-      if (d.success) { setVaultMessage('✅ Importado. Recargando...'); setVaultMessageType('success'); setTimeout(() => window.location.reload(), 1500) }
+      if (d.success) {
+        setVaultMessage('✅ Importado. Recargando...'); setVaultMessageType('success')
+        alert('✅ Importación correcta.\n\nLa página se recargará para cargar todos los datos (grafos, wiki, proyectos).')
+        setTimeout(() => window.location.reload(), 500)
+      }
       else { setVaultMessage('❌ ' + (d.message || '')); setVaultMessageType('error') }
     } catch { setVaultMessage('❌ Error'); setVaultMessageType('error') } finally { setVaultImporting(false) }
   }
@@ -295,7 +423,7 @@ function App() {
   return (
     <div className="app-shell">
       <Header status={status} />
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} />
+      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} agentName={editAgentName} />
       <main className="app-main">
         {activeTab === 'dashboard' && <DashboardView vaultInfo={vaultInfo} systemInfo={systemInfo} containers={containers} editAgentName={editAgentName} />}
         {activeTab === 'chat' && (
@@ -304,7 +432,16 @@ function App() {
             setChatMessage={setChatMessage} setChatAttachedFile={setChatAttachedFile}
             onSend={handleSendChat} onUploadFile={handleUploadChatFile}
             onDragOver={handleChatDragOver} onDragLeave={handleChatDragLeave} onDrop={handleChatDrop} fileInputRef={fileInputRef}
-            onRefreshGraph={loadWikiGraph} onReloadProjects={loadProjects} projects={projects} />
+            onRefreshGraph={loadWikiGraph} onReloadProjects={loadProjects} projects={projects}
+            onInvestigate={handleInvestigate} onSaveOutput={handleSaveOutput}
+            activeSessionId={activeSessionId} sessions={sessions}
+            onNewSession={createNewSession} onSwitchSession={switchToSession}
+            onDeleteSession={deleteSession} onRenameSession={renameSession}
+            chatSmart={chatSmart} setChatSmart={setChatSmart}
+            cerebroMode={cerebroMode} setCerebroMode={setCerebroMode}
+            internetMode={internetMode} setInternetMode={setInternetMode}
+            investigationMode={investigationMode} setInvestigationMode={setInvestigationMode}
+            selectedMessages={selectedMessages} setSelectedMessages={setSelectedMessages} />
         )}
         {activeTab === 'cerebro' && (
           <CerebroView subtab={cerebroSubtab} setSubtab={setCerebroSubtab} rawFiles={rawFiles} outputFiles={outputFiles}
@@ -312,6 +449,7 @@ function App() {
             onDelete={handleCerebroDelete} deleting={cerebroDeleting} onReloadRaw={loadCerebroFiles} onRefreshGraph={loadWikiGraph} onReloadProjects={loadProjects} />
         )}
         {activeTab === 'graph' && <GrafoView nodes={wikiGraph.nodes || []} edges={wikiGraph.edges || []} refreshKey={wikiGraph} projects={projects} />}
+        {activeTab === 'modelos' && <ModelosView />}
         {activeTab === 'settings' && (
           <AjustesView editAgentName={editAgentName} editPersonality={editPersonality} editingAgent={editingAgent}
             editSaving={editSaving} editMessage={editMessage} editMessageType={editMessageType} restarting={restarting}
@@ -320,8 +458,9 @@ function App() {
             onEdit={() => setEditingAgent(true)} onCancelEdit={() => { setEditingAgent(false); loadAgentConfig() }}
             onSaveEdit={handleSaveAgentEdit} setEditAgentName={setEditAgentName} setEditPersonality={setEditPersonality}
             onRestart={handleRestartAgent} onSaveKey={handleSaveHermesKey} onDeleteKey={handleDeleteHermesKey}
-            onExport={handleExportVault} onImport={handleImportVault} onReset={handleResetConfig} />
+            onExport={() => { setVaultMessage(''); setShowExportPopup(true) }} onImport={handleImportVault} onReset={handleResetConfig} />
         )}
+        {showExportPopup && <ExportPopup onClose={() => setShowExportPopup(false)} onExport={handleExportVault} vaultMessage={vaultMessage} vaultMessageType={vaultMessageType} />}
       </main>
       <MobileNav activeTab={activeTab} onTabChange={setActiveTab} />
     </div>

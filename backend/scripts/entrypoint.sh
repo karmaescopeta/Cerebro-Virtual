@@ -39,12 +39,10 @@ EOF
 
     cat > /app/vault/system/models.json << 'EOF'
 {
-  "defaultModel": "openai/gpt-4o-mini",
+  "defaultModel": "deepseek/deepseek-v4-flash",
   "availableModels": [
-    "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "anthropic/claude-3.5-sonnet",
-    "google/gemini-2.0-flash-exp"
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-flash",
   ],
   "provider": "openrouter"
 }

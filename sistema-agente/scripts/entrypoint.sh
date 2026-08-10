@@ -112,7 +112,7 @@ agent:
   personality: Eres un asistente útil y amigable.
 llm:
   provider: openrouter
-  model: openai/gpt-4o-mini
+  model: deepseek/deepseek-v4-flash
 channels:
   web:
     enabled: true

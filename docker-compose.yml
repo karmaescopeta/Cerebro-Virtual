@@ -53,6 +53,19 @@ services:
     profiles:
       - agent
 
+  searxng:
+    image: searxng/searxng:latest
+    container_name: cerebro-searxng
+    restart: unless-stopped
+    ports:
+      - "8888:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8888/
+    networks:
+      - cerebro-network
+
   herramientas:
     build:
       context: ./herramientas

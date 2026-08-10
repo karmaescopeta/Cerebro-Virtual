@@ -43,9 +43,12 @@ def main():
     api_key = config.get("apiKey", "")
     channels = config.get("channels", {}) or {}
     channel_tokens = config.get("channelTokens", {}) or {}
+    models = config.get("models", {}) or {}
     dashboard = config.get("dashboard", {}) or {}
     dashboard_user = (dashboard.get("user") or "").strip()
     dashboard_password = dashboard.get("password") or ""
+
+    default_model = models.get("chat-default", "").strip() or "openrouter/auto"
 
     dashboard_config = {
         "host": "0.0.0.0",
@@ -80,13 +83,13 @@ def main():
 
     llm_config = {
         "provider": "openrouter",
-        "default": "openai/gpt-4o-mini",
+        "default": default_model,
         "api_key": api_key,
     }
     legacy_llm_config = {
         "provider": "openrouter",
         "api_key": api_key,
-        "model": "openai/gpt-4o-mini",
+        "model": default_model,
     }
 
     hermes_config = {

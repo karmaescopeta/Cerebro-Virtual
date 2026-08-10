@@ -1,0 +1,13 @@
+digraph G {
+    "Contexto del Proyecto - Cerebro Virtual";
+    "Ubicación" -> "Contexto del Proyecto - Cerebro Virtual";
+    "Proyectos" -> "Ubicación";
+    "Puntos Clave";
+    "Especificaciones de UX";
+    "Especificaciones de diseño";
+    "Elementos de interfaz de usuario";
+    "Requisitos de accesibilidad";
+    "Interacción del usuario";
+    "Pruebas de usabilidad";
+    "Estrategias de implementación";
+}

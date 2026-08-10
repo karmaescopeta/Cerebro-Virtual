@@ -2,11 +2,21 @@ import React, { useState, useEffect } from 'react'
 import './components/wizard/wizard.css'
 import WelcomeScreen from './components/wizard/WelcomeScreen'
 import WizardStep1 from './components/wizard/WizardStep1'
+import WizardStepModels from './components/wizard/WizardStepModels'
 import WizardStep2 from './components/wizard/WizardStep2'
 import WizardStep3 from './components/wizard/WizardStep3'
 
+const DEFAULT_MODELS = {
+  coordinador: 'deepseek/deepseek-v4-flash',
+  editor: 'deepseek/deepseek-v4-flash',
+  indexador: 'deepseek/deepseek-v4-flash',
+  sintetizador: 'deepseek/deepseek-v4-flash',
+  investigador: 'deepseek/deepseek-v4-flash',
+  graphify: 'google/gemma-4-26b-a4b-it:free',
+}
+
 function SetupWizard({ onComplete }) {
-  const [step, setStep] = useState(0) // 0=welcome, 1=config, 2=confirm, 3=done
+  const [step, setStep] = useState(0) // 0=welcome, 1=config, 2=models, 3=confirm, 4=done
   const [loading, setLoading] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [installLog, setInstallLog] = useState([])
@@ -23,6 +33,7 @@ function SetupWizard({ onComplete }) {
     whatsappPhone: '',
     dashboardUser: '',
     dashboardPassword: '',
+    models: { ...DEFAULT_MODELS },
   })
 
   useEffect(() => {
@@ -67,6 +78,7 @@ function SetupWizard({ onComplete }) {
           telegramToken: formData.telegramToken,
           discordToken: formData.discordToken,
           whatsappPhone: formData.whatsappPhone,
+          models: formData.models,
         }),
       })
       const configureData = await configureRes.json()
@@ -110,17 +122,27 @@ function SetupWizard({ onComplete }) {
 
   if (step === 2)
     return (
+      <WizardStepModels
+        formData={formData}
+        updateForm={updateForm}
+        onBack={() => setStep(1)}
+        onNext={() => setStep(3)}
+      />
+    )
+
+  if (step === 3)
+    return (
       <WizardStep2
         formData={formData}
         installLog={installLog}
         loading={loading}
         statusMessage={statusMessage}
-        onBack={() => setStep(1)}
+        onBack={() => setStep(2)}
         onCreate={handleCreate}
       />
     )
 
-  if (step === 3)
+  if (step === 4)
     return <WizardStep3 formData={formData} onComplete={onComplete} />
 
   return null

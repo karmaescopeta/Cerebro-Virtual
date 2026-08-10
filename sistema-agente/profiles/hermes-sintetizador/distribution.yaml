@@ -1,9 +1,0 @@
-name: sintetizador
-version: 0.1.0
-description: "Sintetizador paciente que convierte el caos de raw/ en conocimiento estructurado en wiki/ con resúmenes, enlaces y fuentes."
-author: "Isla Computer"
-hermes_requires: ">=0.6.0"
-env_requires:
-  - VAULT_ROOT
-  - RAW_PATH
-  - WIKI_PATH

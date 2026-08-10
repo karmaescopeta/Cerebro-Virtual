@@ -6,7 +6,7 @@
 - Frontend: React 18, Vite 5, Nginx Alpine
 - Agente: Hermes Agent (Nous Research), 5 perfiles
 - IA Local: Ollama (llama3.2:3b, qwen2.5, llama3.1)
-- IA Nube: OpenRouter (openai/gpt-4o-mini)
+- IA Nube: OpenRouter (deepseek/deepseek-v4-flash, deepseek/deepseek-v4-flash-latest)
 
 ## Red de Contenedores
 ```

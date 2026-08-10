@@ -1,0 +1,234 @@
+{
+  "nodes": [
+    {
+      "id": "documentacion_proyecto_intermodular_abstract",
+      "label": "Project Abstract",
+      "file_type": "document",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "Abstract"
+    },
+    {
+      "id": "documentacion_proyecto_intermodular_esp32_firmware",
+      "label": "ESP32 Firmware Documentation",
+      "file_type": "document",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "12.1 Prop\u00f3sito"
+    },
+    {
+      "id": "documentacion_proyecto_intermodular_app_java",
+      "label": "Java App Documentation",
+      "file_type": "document",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.1 Prop\u00f3sito"
+    },
+    {
+      "id": "model_key",
+      "label": "Key",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_knob",
+      "label": "Knob",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_macro",
+      "label": "Macro",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_profile",
+      "label": "Profile",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_profile_repository",
+      "label": "ProfileRepository",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_device_service",
+      "label": "DeviceService",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "model_serial_device_service",
+      "label": "SerialDeviceService",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.1 Paquete model"
+    },
+    {
+      "id": "controller_device_controller",
+      "label": "DeviceController",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.2 Paquete controller"
+    },
+    {
+      "id": "controller_key_config_controller",
+      "label": "KeyConfigController",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.2 Paquete controller"
+    },
+    {
+      "id": "controller_profile_controller",
+      "label": "ProfileController",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.2 Paquete controller"
+    },
+    {
+      "id": "controller_navigation_controller",
+      "label": "NavigationController",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.2 Paquete controller"
+    },
+    {
+      "id": "view_main_view",
+      "label": "MainView",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.3 Paquete view"
+    },
+    {
+      "id": "main_aplicacionteclado",
+      "label": "AplicacionTeclado",
+      "file_type": "code",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "11.2.4 Clase Principal"
+    },
+    {
+      "id": "esp32_hardware",
+      "label": "ESP32 Microcontroller",
+      "file_type": "concept",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "3.2 Componentes del hardware"
+    },
+    {
+      "id": "esp32_firmware_logic",
+      "label": "ESP32 Firmware Logic",
+      "file_type": "concept",
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt",
+      "source_location": "12.2.6 Comunicaci\u00f3n serie"
+    }
+  ],
+  "edges": [
+    {
+      "source": "main_aplicacionteclado",
+      "target": "model_profile_repository",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "main_aplicacionteclado",
+      "target": "controller_device_controller",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "controller_key_config_controller",
+      "target": "model_key",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "controller_key_config_controller",
+      "target": "model_macro",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "controller_profile_controller",
+      "target": "model_profile",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "controller_device_controller",
+      "target": "model_device_service",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "model_device_service",
+      "target": "model_serial_device_service",
+      "relation": "implements",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "model_serial_device_service",
+      "target": "esp32_hardware",
+      "relation": "calls",
+      "confidence": "INFERRED",
+      "confidence_score": 0.9,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "esp32_firmware_logic",
+      "target": "esp32_hardware",
+      "relation": "references",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    },
+    {
+      "source": "esp32_firmware_logic",
+      "target": "esp32_hardware",
+      "relation": "calls",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    }
+  ],
+  "hyperedges": [
+    {
+      "id": "mvc_architecture",
+      "label": "MVC Architecture Pattern",
+      "nodes": [
+        "model_key",
+        "model_knob",
+        "model_macro",
+        "model_profile",
+        "controller_device_controller",
+        "controller_key_config_controller",
+        "controller_profile_controller",
+        "view_main_view"
+      ],
+      "relation": "implement",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "Documentaci\u00f3n_proyecto_intermodular.txt"
+    }
+  ],
+  "input_tokens": 33232,
+  "output_tokens": 2327
+}

@@ -1,0 +1,136 @@
+{
+  "id": "b9ada833-c47b-4136-a7dd-bd528f44e46c",
+  "title": "Primer chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hola que tal como estas ?",
+      "context": null,
+      "timestamp": "2026-08-09T21:14:40.471245"
+    },
+    {
+      "role": "assistant",
+      "content": "¡Hola! Estoy muy bien, gracias por preguntar. ¿Y tú, qué tal? ¿En qué te\npuedo ayudar hoy?",
+      "context": {
+        "via": "chat-default",
+        "found_info": true,
+        "sources": [],
+        "mode": "default",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-09T21:14:45.777663"
+    },
+    {
+      "role": "user",
+      "content": "Que son los gatos?",
+      "context": null,
+      "timestamp": "2026-08-09T21:15:48.366019"
+    },
+    {
+      "role": "assistant",
+      "content": "Los gatos (Felis catus) son mamíferos carnívoros de la familia de los\nfélidos. Han convivido con los seres humanos desde hace aproximadamente\n9.500 años y se han convertido en uno de los animales domésticos y de compañía más populares del mundo, junto con los perros.\n\nAunque hoy en día viven principalmente en los hogares como mascotas,\nconservan su instinto de cazadores y depredadores (capturando presas\npequeñas como roedores y aves). La población mundial estimada supera los\ncientos de millones, incluyendo tanto gatos domésticos como callejeros y\nsalvajes.",
+      "context": {
+        "via": "chat-default",
+        "found_info": true,
+        "sources": [],
+        "mode": "default",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-09T21:15:54.002956"
+    },
+    {
+      "role": "user",
+      "content": "que me puedes decir de los gatos?",
+      "context": null,
+      "timestamp": "2026-08-09T21:17:43.072692"
+    },
+    {
+      "role": "assistant",
+      "content": "¡Claro! Los gatos son fascinantes. Retomando lo básico y ampliando con lo que he encontrado:\n\nLos gatos (Felis catus) son mamíferos carnívoros domésticos de la familia de los félidos. Llevan unos 9.500 años conviviendo con humanos y hoy hay cientos de millones en el mundo.\n\nCaracterísticas clave\n\n- Independientes — No dependen de los humanos para todo. Un gato doméstico necesita comida, agua y cuidados veterinarios, pero se las arregla solo gran parte del tiempo.\n- Velocidad — Pueden alcanzar ~50 km/h, más rápido que Usain Bolt en 200 metros.\n- Cazadores natos — Conservan el instinto depredador. Aunque vivan en un piso, siguen acechando, saltando y \"cazando\" juguetes.\n\nCómo se comunican\n\nLos gatos se expresan mucho con maullidos:\n- Maullidos breves y sucesivos → saludo o \"hola\".\n- Maullido prolongado y sostenido → petición concreta (comida, atención, algo que quieren).\n- Ronroneo → generalmente placer o relajación, aunque a veces también estrés.\n- Bufidos → advertencia clara: \"no te acerques\".\n\nCuriosidades\n\n- Duermen entre 12 y 16 horas al día.\n- Tienen un oído muy superior al de los perros y los humanos (captan ultrasonidos).\n- Su lengua está cubierta de pequeñas papilas en forma de gancho que usan para acicalarse y desgarrar carne.\n- Cada gato tiene un patrón único en su nariz, como nuestras huellas dactilares.\n\nPersonalidad\n\nSon animales de rutina y territoriales. No es que sean \"antipáticos\" — simplemente muestran el cariño de forma distinta a los perros: restregándose, amasando con las patas, parpadeando lentamente (es una señal de confianza).\n\n¿Hay algo más específico que quieras saber? ¿Cuidados, razas,\ncomportamiento, algo curioso en concreto?",
+      "context": {
+        "via": "chat-smart",
+        "found_info": true,
+        "sources": [],
+        "mode": "smart",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-09T21:17:58.904811"
+    },
+    {
+      "role": "user",
+      "content": "que sabes de los gatos?",
+      "context": null,
+      "timestamp": "2026-08-09T21:20:56.473055"
+    },
+    {
+      "role": "assistant",
+      "content": "🔍 **No he encontrado información sobre esto en el cerebro.**",
+      "context": {
+        "via": "direct",
+        "found_info": false,
+        "sources": [],
+        "mode": "cerebro"
+      },
+      "timestamp": "2026-08-09T21:20:56.538015"
+    },
+    {
+      "role": "user",
+      "content": "que sabes sobre los gatos",
+      "context": null,
+      "timestamp": "2026-08-09T21:22:07.900973"
+    },
+    {
+      "role": "assistant",
+      "content": "🧠 **CEREBRO**\n\nNo se encontró información en el cerebro.\n\n---\n\n🌐 **INTERNET**\n\nBasándome en los resultados de búsqueda, aquí tienes varios datos curiosos e interesantes sobre los gatos:\n\n- Anatomía y capacidades físicas: Tienen 230 huesos (24 más que los\nhumanos), lo que les otorga una gran flexibilidad. Poseen una audición\nsuperior a la de los perros (pueden oír sonidos de alta frecuencia, unas\ndos octavas por encima de los humanos) y pueden correr hasta a 49 km/h en distancias cortas.\n- Genética y parientes: Comparten el 95,6% de su composición genética\ncon los tigres, además de conservar comportamientos similares como el\nacecho, el abalanzamiento y el marcaje con olor u orina.\n- Curiosidades y comportamiento:\n- Con el paso de los años, los gatos se vuelven intolerantes a la lactosa.\n- Tienen hábitos como comer plantas y luego vomitar.\n- A Isaac Newton se le atribuye la invención de las puertas abatibles\npara gatos con el fin de evitar distracciones mientras trabajaba.",
+      "context": {
+        "via": "cerebro+internet",
+        "found_info": false,
+        "sources": [],
+        "mode": "cerebro+internet",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-09T21:22:14.558105"
+    },
+    {
+      "role": "user",
+      "content": "dime algo sobre los gatos",
+      "context": null,
+      "timestamp": "2026-08-09T22:45:45.020288"
+    },
+    {
+      "role": "assistant",
+      "content": "Según la información en el cerebro, te cuento lo que tengo sobre los gatos.\n\nEn la página [[Gato_Info]] se recoge que los gatos domésticos (Felis catus) son mamíferos carnívoros de la familia Felidae que han convivido con los humanos durante aproximadamente 9.500 años. Son la única especie domesticada de toda la familia Felidae y una de las mascotas más populares del mundo, con una población global de cientos de millones. El documento también explora su origen, biología, comportamiento y relación con los humanos, aunque los detalles concretos de esas secciones no se muestran en el fragmento disponible.\n\nSi quieres más detalle sobre algún aspecto concreto — origen, biología,\ncomportamiento — puedo hurgar más en esa página del wiki.",
+      "context": {
+        "via": "cerebro",
+        "found_info": true,
+        "sources": [
+          "Doc 20260730 192628",
+          "Gato_Info"
+        ],
+        "mode": "cerebro"
+      },
+      "timestamp": "2026-08-09T22:45:56.772134"
+    },
+    {
+      "role": "user",
+      "content": "dime que es un avion",
+      "context": null,
+      "timestamp": "2026-08-10T00:22:03.150010"
+    },
+    {
+      "role": "assistant",
+      "content": "Un avión (o aeroplano) es un vehículo volador o aerodino de ala fija —es\ndecir, una aeronave más pesada que el aire— que está dotado de alas y de\nuno o más motores que impulsan su vuelo. Se utiliza principalmente para\nel transporte de personas o carga, así como para fines militares,\ndeportivos o de reconocimiento.",
+      "context": {
+        "via": "chat-default",
+        "found_info": true,
+        "sources": [],
+        "mode": "default",
+        "internet_results": 5
+      },
+      "timestamp": "2026-08-10T00:22:09.255059"
+    }
+  ],
+  "createdAt": "2026-08-09T20:49:57.512736",
+  "updatedAt": "2026-08-10T00:22:09.255069",
+  "lastActive": true
+}

@@ -1,0 +1,4 @@
+model: openrouter/auto
+temperature: 0.3
+skills:
+  - web

@@ -2,17 +2,19 @@ import React from 'react'
 
 const ITEMS = [
   { id: 'dashboard', icon: 'dashboard', label: 'DASHBOARD' },
-  { id: 'chat', icon: 'chat', label: 'HERMES' },
+  { id: 'chat', icon: 'chat', label: '__AGENT_NAME__' },
   { id: 'cerebro', icon: 'psychology', label: 'CEREBRO' },
   { id: 'graph', icon: 'hub', label: 'GRAFO' },
+  { id: 'modelos', icon: 'memory', label: 'MODELOS' },
   { id: 'settings', icon: 'settings', label: 'AJUSTES' },
 ]
 
-function Sidebar({ activeTab, onTabChange }) {
+function Sidebar({ activeTab, onTabChange, agentName }) {
+  const items = ITEMS.map(i => i.id === 'chat' ? { ...i, label: (agentName || 'Hermes').toUpperCase() } : i)
   return (
     <aside className="app-sidebar">
       <nav className="sidebar-nav">
-        {ITEMS.map((item) => (
+        {items.map((item) => (
           <button
             key={item.id}
             className={`sidebar-item ${activeTab === item.id ? 'active' : ''}`}

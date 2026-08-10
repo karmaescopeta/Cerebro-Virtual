@@ -1,0 +1,7 @@
+name: chat-default
+version: 0.1.0
+description: "Chat normal con modelo free. ChatGPT-like con búsqueda internet."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - OPENROUTER_API_KEY

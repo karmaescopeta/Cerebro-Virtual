@@ -1,0 +1,7 @@
+name: chat-smart
+version: 0.1.0
+description: "Chat con modelo paid más inteligente. Mayor profundidad analítica."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - OPENROUTER_API_KEY

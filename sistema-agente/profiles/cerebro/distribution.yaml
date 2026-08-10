@@ -1,0 +1,8 @@
+name: cerebro
+version: 0.1.0
+description: "RAG grafo-primero. Busca en vault y responde solo con conocimiento encontrado."
+author: "Isla Computer"
+hermes_requires: ">=0.6.0"
+env_requires:
+  - OPENROUTER_API_KEY
+  - VAULT_PATH

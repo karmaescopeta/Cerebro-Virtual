@@ -105,7 +105,7 @@ function AjustesView({
           <button className="btn-app btn-app-secondary" onClick={onExport}>
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>download</span> Exportar
           </button>
-          <input type="file" ref={importRef} style={{ display: 'none' }} accept=".tar.gz,.tgz" onChange={(e) => { if (e.target.files[0]) { onImport(e.target.files[0]); e.target.value = '' } }} />
+          <input type="file" ref={importRef} style={{ display: 'none' }} accept=".tar.gz,.tgz,.tar" onChange={(e) => { if (e.target.files[0]) { onImport(e.target.files[0]); e.target.value = '' } }} />
           <button className="btn-app btn-app-success" onClick={() => importRef.current?.click()} disabled={vaultImporting}>
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>upload</span>
             {vaultImporting ? 'Importando...' : 'Importar'}
