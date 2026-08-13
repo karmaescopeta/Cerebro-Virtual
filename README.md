@@ -36,9 +36,9 @@ Solo dos cosas, ambas gratis:
 
 ---
 
-## Instalación en 4 pasos
+## Instalación en 3 pasos
 
-Piensa en esto como montar un mueble: descargas, desempaquetas, pones tus llaves, y enciendes.
+Descargas, enciendes, y el asistente visual te pregunta lo que necesita. Sin editar archivos a mano.
 
 ### 1. Descargar Cerebro Virtual
 
@@ -53,45 +53,7 @@ cd Cerebro-Virtual
 
 Esto baja el proyecto a tu ordenador y entra dentro de la carpeta.
 
-### 2. Configurar tus llaves (una sola vez)
-
-Hay un archivo llamado `.env.example` que sirve de plantilla. Vas a crear tu propia versión con tus datos:
-
-**En Windows (Git Bash o PowerShell):**
-```bash
-copy .env.example .env
-```
-
-**En Mac / Linux:**
-```bash
-cp .env.example .env
-```
-
-Ahora abre el archivo `.env` que acabas de crear con cualquier editor de texto (Bloc de notas, VS Code, lo que sea). Verás algo así:
-
-```
-COMPOSE_PROJECT_NAME=cerebrovirtual
-OPENROUTER_API_KEY=
-BACKEND_PORT=8000
-FRONTEND_PORT=5173
-AGENT_PORT=8080
-SEARXNG_PORT=8888
-CLOUDFLARE_TUNNEL_TOKEN=
-VAULT_HOST_PATH=
-GITHUB_REPO=
-```
-
-Rellena solo lo que necesites:
-
-- **`OPENROUTER_API_KEY=`** → pega aquí tu clave de OpenRouter (la que empieza por `sk-or-...`). Sin espacios.
-- **`VAULT_HOST_PATH=`** → la ruta completa a la carpeta `vault` dentro del proyecto. Ejemplos:
-  - Windows: `C:\Users\tuusuario\Cerebro-Virtual\vault`
-  - Mac/Linux: `/home/tuusuario/Cerebro-Virtual/vault`
-- Lo demás déjalo como está, salvo que sepas que otro programa usa esos puertos.
-
-Guarda el archivo y ciérralo. Ese archivo `.env` es **solo tuyo**: no se sube a internet, no lo ve nadie más.
-
-### 3. Encender Cerebro Virtual
+### 2. Encender Cerebro Virtual
 
 **En Windows:**
 - Haz doble clic en `start.bat` (o ejecútalo desde la terminal).
@@ -108,13 +70,20 @@ docker compose up -d --build
 
 La primera vez tarda varios minutos: descarga imágenes y construye los contenedores. Las siguientes veces es casi instantáneo. No cierres la terminal hasta que veas que terminó.
 
-### 4. Abrirlo en el navegador
+### 3. Abrirlo y configurar con el asistente
 
-Ve a:
+Ve a **http://localhost:5173** en tu navegador.
 
-- **http://localhost:5173** → la interfaz principal (dashboard, wizard, chat, grafo, ajustes).
+La primera vez, aparece un **asistente visual** (wizard) que te guía paso a paso:
 
-Si cambiaste `FRONTEND_PORT` en tu `.env`, sustituye `5173` por ese puerto.
+1. **Te pide tu clave de OpenRouter** — la que copiaste antes (empieza por `sk-or-...`). Pégala ahí.
+2. **Nombre del agente y personalidad** — puedes dejar los valores por defecto o personalizarlos.
+3. **Modelos de IA** — qué modelo usa cada perfil. Hay valores por defecto, no tienes que cambiar nada si no quieres.
+4. **Túnel de Cloudflare (opcional)** — si quieres acceso desde el móvil, pega tu token. Si no, sáltalo.
+
+Cuando terminas, el asistente guarda todo y Cerebro Virtual queda listo. No tienes que editar ningún archivo de texto en ningún momento.
+
+> **¿Necesitas cambiar algo después?** Ve a Ajustes (el icono de engranaje en la interfaz). Desde ahí puedes cambiar la clave, los modelos, activar/desactivar el túnel, exportar copias de seguridad, etc.
 
 ---
 
@@ -148,9 +117,9 @@ Tus datos del vault y tu `.env` no se tocan. Solo se actualiza el código.
 
 **"Docker no encontrado"** → Docker Desktop no está corriendo. Ábrelo y espera a que el icono de la barra de tareas deje de animar.
 
-**"Puerto en uso"** → Otro programa usa ese puerto. Edita `.env` (cambia `FRONTEND_PORT=5174` por ejemplo) y reinicia.
+**"Puerto en uso"** → Otro programa usa ese puerto. Si sabes qué es un `.env`, puedes cambiar `FRONTEND_PORT=5174` y reiniciar. Si no, cierra el otro programa.
 
-**"La IA no responde"** → Revisa que tu clave de OpenRouter en `.env` es correcta y tiene saldo. Crea una nueva en https://openrouter.ai/keys si hace falta.
+**"La IA no responde"** → Ve a Ajustes en la interfaz y comprueba que tu clave de OpenRouter es correcta y tiene saldo. Crea una nueva en https://openrouter.ai/keys si hace falta.
 
 **Ver logs (para diagnosticar):**
 ```bash
@@ -179,21 +148,27 @@ Cloudflare Tunnel crea un pasadizo seguro entre tu Cerebro y una dirección púb
 
 ### ¿Cómo se configura?
 
+Tienes dos opciones:
+
+**Opción fácil (desde la interfaz):** Abre Cerebro Virtual → Ajustes → busca la sección del túnel → pega tu token ahí. El sistema lo guarda y activa el túnel automáticamente.
+
+**Opción manual (editando `.env`):** Si prefieres hacerlo antes de arrancar, pega el token en tu archivo `.env`:
+```
+CLOUDFLARE_TUNNEL_TOKEN=eyJ...todo-el-token...
+```
+Y reinicia con `docker compose up -d`.
+
+Para conseguir el token:
 1. Ve a https://one.dash.cloudflare.com/ y créate una cuenta (gratis).
 2. En el panel, ve a **Networks → Tunnels → Create a tunnel**.
 3. Sigue los pasos. Te dará un **token** largo (empieza por `eyJ...`).
-4. Copia ese token y pégalo en tu `.env`:
-   ```
-   CLOUDFLARE_TUNNEL_TOKEN=eyJ...todo-el-token...
-   ```
-5. Reinicia Cerebro Virtual (`docker compose up -d`).
-6. En el panel de Cloudflare, configura el túnel para que apunte a `http://cerebro-frontend:5173` (o el puerto que pusiste).
+4. Configura el túnel para que apunte a `http://cerebro-frontend:5173` (o el puerto que pusiste).
 
 Ya puedes acceder desde el móvil con la URL que te dé Cloudflare (`https://tu-tunnel.trycloudflare.com` o el dominio que configures).
 
 ### ¿Y si no lo quiero?
 
-No lo configures. Cerebro funciona igual, solo en `localhost`. Si ya lo activaste y lo quieres quitar: borra el token del `.env`, o ve a Ajustes → "Desactivar túnel".
+No lo configures. Cerebro funciona igual, solo en `localhost`. Si ya lo activaste y lo quieres quitar: ve a Ajustes → "Desactivar túnel", o borra el token del `.env` y reinicia.
 
 ### ¿Es seguro?
 
@@ -224,6 +199,8 @@ vault/
 
 ---
 
-## Tu `.env` es tuyo
+## El archivo `.env` (avanzado, opcional)
 
-El archivo `.env` está excluido del repositorio (en `.gitignore`). Nadie puede ver tus claves. Si alguien clona el repo, solo obtiene la plantilla `.env.example` con campos vacíos. Tú eres el único que conoce tus claves.
+Cerebro Virtual funciona sin que toques ningún archivo de configuración: el wizard y la pantalla de Ajustes lo hacen todo.
+
+Si eres usuario avanzado y quieres cambiar puertos o preconfigurar algo antes de arrancar, existe un archivo `.env` (copia de `.env.example`) que puedes editar. Ese archivo está excluido del repositorio (en `.gitignore`): nadie puede ver tus claves, solo tú.
