@@ -1,0 +1,42 @@
+# Secrets & user data
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Hermes local state
+.hermes/
+
+# Agent config (generated at runtime)
+sistema-agente/config/
+
+# Vault — only keep directory structure
+vault/
+!vault/.gitkeep
+!vault/raw/.gitkeep
+!vault/raw/.processed/.gitkeep
+!vault/wiki/.gitkeep
+!vault/outputs/.gitkeep
+!vault/system/.gitkeep
+!vault/chat-sesiones/.gitkeep
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# OpenSpec (keep specs, ignore nothing special)
+# openspec/ is tracked normally

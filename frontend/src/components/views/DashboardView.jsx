@@ -37,7 +37,7 @@ function DashboardView({ vaultInfo, systemInfo, containers, editAgentName }) {
             </div>
             <div style={{ gridColumn: 'span 2' }}>
               <div className="label-caps" style={{ marginBottom: 'var(--space-1)' }}>HERMES PORT</div>
-              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--color-primary)', background: 'rgba(173,198,255,0.05)', padding: '4px 12px', borderRadius: 'var(--radius-md)', border: '1px solid rgba(173,198,255,0.2)' }}>localhost:8080</code>
+              <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--color-primary)', background: 'rgba(173,198,255,0.05)', padding: '4px 12px', borderRadius: 'var(--radius-md)', border: '1px solid rgba(173,198,255,0.2)' }}>/agent</code>
             </div>
           </div>
           {/* Containers */}

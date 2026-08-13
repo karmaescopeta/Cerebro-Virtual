@@ -3,17 +3,20 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: cerebro-backend
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     environment:
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       - VAULT_PATH=/app/vault
+      - VAULT_HOST_PATH=${VAULT_HOST_PATH:-}
+      - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-cerebrovirtual}
+      - GITHUB_REPO=${GITHUB_REPO:-}
     volumes:
       - ./vault:/app/vault
       - ./sistema-agente:/app/sistema-agente:ro
       - ./herramientas:/app/herramientas:ro
+      - ./VERSION:/app/VERSION:ro
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - cerebro-network
@@ -22,10 +25,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: cerebro-frontend
     restart: unless-stopped
     ports:
-      - "5173:80"
+      - "${FRONTEND_PORT:-5173}:80"
     networks:
       - cerebro-network
     depends_on:
@@ -35,10 +37,9 @@ services:
     build:
       context: ./sistema-agente
       dockerfile: Dockerfile
-    container_name: cerebro-agente
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "${AGENT_PORT:-8080}:8080"
     volumes:
       - ./vault:/app/vault
       - ./sistema-agente/config:/app/config
@@ -50,19 +51,16 @@ services:
       - VAULT_PATH=/app/vault
       - CONFIG_PATH=/app/config/agent-config.yaml
       - HERMES_CONFIG=/app/vault/system/agent-config.json
-    profiles:
-      - agent
 
   searxng:
     image: searxng/searxng:latest
-    container_name: cerebro-searxng
     restart: unless-stopped
     ports:
-      - "8888:8080"
+      - "${SEARXNG_PORT:-8888}:8080"
     volumes:
       - ./searxng:/etc/searxng:rw
     environment:
-      - SEARXNG_BASE_URL=http://localhost:8888/
+      - SEARXNG_BASE_URL=http://localhost:${SEARXNG_PORT:-8888}/
     networks:
       - cerebro-network
 
@@ -70,20 +68,28 @@ services:
     build:
       context: ./herramientas
       dockerfile: Dockerfile
-    container_name: cerebro-herramientas
     restart: "no"
     volumes:
       - ./vault:/app/vault
     environment:
-      # ponytail: Graphify Pass 3 usa OpenRouter como backend OpenAI-compatible.
-      # La key NUNCA se hardcodea — se lee del .env del host via ${VAR}.
       - OPENAI_BASE_URL=https://openrouter.ai/api/v1
       - OPENAI_API_KEY=${OPENROUTER_API_KEY}
       - GRAPHIFY_OPENAI_MODEL=google/gemma-4-26b-a4b-it:free
     networks:
       - cerebro-network
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    command: tunnel --no-autoupdate run
+    networks:
+      - cerebro-network
+    depends_on:
+      - frontend
     profiles:
-      - tools
+      - tunnel
 
 networks:
   cerebro-network:

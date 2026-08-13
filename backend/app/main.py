@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 import httpx
-import docker
+
 import subprocess
 import time
 
@@ -32,7 +32,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 # Rutas de configuración
 AGENT_KEYS_PATH = Path(VAULT_PATH) / "system" / "agent-keys.json"
 AGENT_CONFIG_PATH = Path(VAULT_PATH) / "system" / "agent-config.json"
-AGENT_INTERNAL_URL = os.getenv("AGENT_INTERNAL_URL", "http://cerebro-agente:8080")
+AGENT_INTERNAL_URL = os.getenv("AGENT_INTERNAL_URL", "http://sistema-agente:8080")
 
 # ponytail: servir archivos del vault (imagenes para preview en chat)
 from fastapi.staticfiles import StaticFiles
@@ -80,24 +80,10 @@ def save_agent_config(data):
 # FUNCIONES PARA MANEJAR EL CONTENEDOR DEL AGENTE
 # ============================================
 
-def get_docker_client():
-    try:
-        return docker.from_env()
-    except Exception as e:
-        print(f"⚠️ Error al conectar con Docker: {e}")
-        return None
-
-def _join_host_path(base: str, *parts: str) -> str:
-    """Join a Docker host path returned by inspect (Windows or POSIX)."""
-    sep = "\\" if "\\" in base or (len(base) > 1 and base[1] == ":") else "/"
-    return base.rstrip("\\/") + sep + sep.join(parts)
-
-
-def _get_backend_mount_source(container, destination: str):
-    for mount in container.attrs.get("Mounts", []):
-        if mount.get("Destination") == destination:
-            return mount.get("Source")
-    return None
+def _compose_cmd(*args):
+    """Build a docker compose command scoped to this project."""
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    return ["docker", "compose", "-p", project] + list(args)
 
 
 def _agent_http_ready(timeout=1.5):
@@ -113,89 +99,21 @@ def _agent_http_ready(timeout=1.5):
 
 
 def start_agent_container():
-    """Build and start the Hermes agent container from the backend.
-
-    The backend runs inside Docker, so executing `docker compose` from here is
-    unreliable: relative bind paths would point to the backend container instead
-    of the Windows host. We use the Docker SDK instead, build the agent image by
-    streaming `/app/sistema-agente` as context, and reuse the host bind path of
-    the backend's `/app/vault` mount for the agent container.
-    """
-    # Fast path: when the frontend reloads after the wizard, don't rebuild the
-    # heavy Hermes image if the agent is already reachable. Do this before
-    # touching Docker SDK so an already-running app stays responsive even if
-    # Docker is slow.
+    """Start the agent service via docker compose."""
     if _agent_http_ready(timeout=0.8):
         return True, "El agente ya está iniciado"
 
-    client = get_docker_client()
-    if not client:
-        return False, "No se pudo conectar con Docker desde el backend"
-
-    try:
-        existing = client.containers.get("cerebro-agente")
-        existing.reload()
-        if existing.status == "running":
+    result = subprocess.run(
+        _compose_cmd("start", "sistema-agente"),
+        capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        if _agent_http_ready(timeout=3):
             return True, "El agente ya está iniciado"
-    except docker.errors.NotFound:
-        pass
+        return False, f"Error al iniciar agente: {result.stderr}"
 
-    image_tag = os.getenv("AGENT_IMAGE", "cerebrovirtual-sistema-agente:latest")
-    build_context = os.getenv("AGENT_BUILD_CONTEXT", "/app/sistema-agente")
+    return True, "Agente iniciado"
 
-    try:
-        backend_container = client.containers.get("cerebro-backend")
-        vault_source = _get_backend_mount_source(backend_container, "/app/vault")
-        if not vault_source:
-            return False, "No se encontró el volumen host de /app/vault en cerebro-backend"
-
-        project_source = vault_source.rstrip("\\/")
-        # Remove the final 'vault' path segment.
-        if project_source.lower().endswith("\\vault") or project_source.lower().endswith("/vault"):
-            project_source = project_source[:-6]
-        config_source = _join_host_path(project_source, "sistema-agente", "config")
-
-        networks = backend_container.attrs.get("NetworkSettings", {}).get("Networks", {})
-        network_name = next(iter(networks.keys()), None)
-
-        # Build image on demand. This is what makes a fresh start.bat flow work:
-        # start.bat only launches backend/frontend; the agent is built when the
-        # wizard finishes and /api/agent/start is called.
-        if Path(build_context).exists():
-            print(f"🔨 Construyendo imagen del agente desde {build_context}...")
-            client.images.build(path=build_context, tag=image_tag, rm=True)
-        else:
-            print(f"⚠️ No existe {build_context}; usando imagen existente {image_tag}")
-            client.images.get(image_tag)
-
-        # Remove stale container so config changes from the wizard are applied.
-        try:
-            old = client.containers.get("cerebro-agente")
-            old.remove(force=True)
-        except docker.errors.NotFound:
-            pass
-
-        print("🚀 Creando contenedor cerebro-agente...")
-        client.containers.run(
-            image_tag,
-            name="cerebro-agente",
-            detach=True,
-            ports={"8080/tcp": 8080},
-            volumes={
-                vault_source: {"bind": "/app/vault", "mode": "rw"},
-                config_source: {"bind": "/app/config", "mode": "rw"},
-            },
-            environment={
-                "VAULT_PATH": "/app/vault",
-                "CONFIG_PATH": "/app/config/agent-config.yaml",
-                "HERMES_CONFIG": "/app/hermes-home/config.yaml",
-            },
-            network=network_name,
-            restart_policy={"Name": "unless-stopped"},
-        )
-        return True, "Contenedor del agente construido e iniciado"
-    except Exception as e:
-        return False, f"Error al iniciar el agente: {e}"
 
 
 def wait_for_agent_ready(timeout=180, interval=2):
@@ -705,8 +623,8 @@ def _synthesize_wiki(stem: str, extracted_text: str, api_key: str) -> str:
                 "No repitas el título. Empieza directamente con ##.\n\nTexto:\n\n{chunk}"
             )
         result = subprocess.run(
-            ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-             "cerebro-agente", HERMES_BIN, "chat", "-q", prompt],
+            ["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"), "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
+             "sistema-agente", HERMES_BIN, "chat", "-q", prompt],
             capture_output=True, text=True, timeout=180
         )
         if result.returncode != 0:
@@ -915,8 +833,8 @@ def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: 
             hist_text += f"[{role}]: {content}\n"
         full_prompt = hist_text + "\n\n**Pregunta/mensaje actual:**\n" + prompt
 
-    cmd = ["docker", "exec", "-e", f"OPENROUTER_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY}",
-           "cerebro-agente", HERMES_BIN, "chat", "-q", "-p", profile, full_prompt]
+    cmd = ["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"), "exec", "-e", f"OPENROUTER_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY}",
+           "sistema-agente", HERMES_BIN, "chat", "-q", "-p", profile, full_prompt]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         # ponytail: fallback sin -p
@@ -1154,13 +1072,7 @@ async def save_output(req: SaveOutputRequest):
     try:
         # ponytail: obtener vault_host real del host (VAULT_PATH es /app/vault dentro del contenedor)
         vault_host = VAULT_PATH
-        client = get_docker_client()
-        if client:
-            try:
-                bc = client.containers.get("cerebro-backend")
-                vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
-            except Exception:
-                pass
+        vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
         partial = _run_graphify(str(out_file), vault_host)
         if partial:
             _merge_graph(partial, safe_name + ".md")
@@ -1240,8 +1152,7 @@ async def reset_agent_config():
 
     # 2. Detener y eliminar el contenedor del agente
     try:
-        subprocess.run(["docker", "stop", "cerebro-agente"], capture_output=True, check=False)
-        subprocess.run(["docker", "rm", "-f", "cerebro-agente"], capture_output=True, check=False)
+        subprocess.run(_compose_cmd("stop", "sistema-agente"), capture_output=True, check=False)
     except Exception as e:
         print(f"⚠️ No se pudo eliminar el agente: {e}")
 
@@ -1305,7 +1216,7 @@ async def update_profiles_models(request: dict):
     save_agent_config(config)
 
     # ponytail: docker restart reejecuta entrypoint → generate_config.py + install_profiles.sh aplican nuevos modelos
-    result = subprocess.run(["docker", "restart", "cerebro-agente"], capture_output=True, text=True, check=False)
+    result = subprocess.run(_compose_cmd("restart", "sistema-agente"), capture_output=True, text=True, check=False)
     if result.returncode != 0:
         return {"success": False, "message": f"Modelos guardados pero error al reiniciar: {result.stderr}"}
 
@@ -1313,7 +1224,7 @@ async def update_profiles_models(request: dict):
     import time
     for _ in range(30):
         try:
-            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://cerebro-agente:8080/login"], capture_output=True, text=True, check=False)
+            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://sistema-agente:8080/login"], capture_output=True, text=True, check=False)
             if r.stdout.strip() == "200":
                 break
         except:
@@ -1338,7 +1249,7 @@ async def restart_agent():
     import subprocess
     try:
         result = subprocess.run(
-            ["docker", "restart", "cerebro-agente"],
+            _compose_cmd("restart", "sistema-agente"),
             capture_output=True,
             text=True,
             check=False
@@ -1358,45 +1269,21 @@ async def full_restart_agent():
     El vault (raw/, wiki/, outputs/) NO se toca. Solo se limpia el estado
     del sistema-agente (config.yaml, perfiles instalados, caché de Hermes).
     """
-    import subprocess
-    client = get_docker_client()
-
-    # 1. Detener y eliminar el contenedor del agente
+    # 1. Detener el contenedor del agente
     try:
-        subprocess.run(["docker", "stop", "cerebro-agente"], capture_output=True, check=False, timeout=30)
+        subprocess.run(_compose_cmd("stop", "sistema-agente"), capture_output=True, check=False, timeout=30)
     except Exception:
         pass
-    try:
-        subprocess.run(["docker", "rm", "-f", "cerebro-agente"], capture_output=True, check=False, timeout=30)
     except Exception:
         pass
 
     # 2. Borrar la imagen del agente para forzar rebuild limpio
-    image_tag = os.getenv("AGENT_IMAGE", "cerebrovirtual-sistema-agente:latest")
-    try:
-        if client:
-            client.images.remove(image_tag, force=True)
-        else:
-            subprocess.run(["docker", "rmi", "-f", image_tag], capture_output=True, check=False, timeout=60)
-    except Exception as e:
-        print(f"⚠️ No se pudo borrar la imagen {image_tag}: {e}")
-
-    # 3. Reconstruir la imagen desde cero
-    build_context = os.getenv("AGENT_BUILD_CONTEXT", "/app/sistema-agente")
-    try:
-        if client and Path(build_context).exists():
-            print("🔨 Reconstruyendo imagen del agente desde cero...")
-            client.images.build(path=build_context, tag=image_tag, rm=True)
-        elif client:
-            client.images.pull(image_tag)
-        else:
-            subprocess.run(
-                ["docker", "compose", "--profile", "agent", "build", "--no-cache", "sistema-agente"],
-                capture_output=True, check=False, timeout=600,
-                cwd="/app"
-            )
-    except Exception as e:
-        return {"success": False, "message": f"Error al reconstruir la imagen: {e}"}
+    result = subprocess.run(
+        _compose_cmd("build", "--no-cache", "sistema-agente"),
+        capture_output=True, text=True, timeout=600
+    )
+    if result.returncode != 0:
+        return {"success": False, "message": f"Error al reconstruir imagen: {result.stderr}"}
 
     # 4. Arrancar el contenedor nuevo
     success, message = start_agent_container()
@@ -1549,6 +1436,7 @@ async def configure_agent(request: dict):
         discord_token = request.get("discordToken", "").strip()
         whatsapp_phone = request.get("whatsappPhone", "").strip()
         models = request.get("models", {})
+        cloudflare_token = request.get("cloudflareTunnelToken", "").strip()
 
         if not agent_name:
             agent_name = "Hermes"
@@ -1579,6 +1467,7 @@ async def configure_agent(request: dict):
                             "whatsapp": whatsapp_phone
                         },
                         "models": models,
+            "cloudflareTunnelToken": cloudflare_token,
             "createdAt": datetime.now().isoformat(),
             "updatedAt": datetime.now().isoformat()
         }
@@ -1704,7 +1593,7 @@ async def import_vault(file: UploadFile = File(...)):
 
         # ponytail: reiniciar agente para que cargue los datos nuevos
         try:
-            subprocess.run(["docker", "restart", "cerebro-agente"], capture_output=True, timeout=30)
+            subprocess.run(_compose_cmd("restart", "sistema-agente"), capture_output=True, timeout=30)
         except Exception:
             pass
 
@@ -1759,14 +1648,7 @@ async def upload_to_vault(file: UploadFile = File(...), project: str = "individu
     api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
     if api_key:
         try:
-            client = get_docker_client()
-            vault_host = VAULT_PATH
-            if client:
-                try:
-                    bc = client.containers.get("cerebro-backend")
-                    vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
-                except Exception:
-                    pass
+            vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
 
             # 1. extraer texto
             extract = subprocess.run(
@@ -2253,8 +2135,8 @@ async def update_project(project_id: str, update: ProjectUpdate):
 async def process_raw_file(request: dict):
     """Procesa un archivo de raw/ → texto extraído → página wiki via Sintetizador.
 
-    1. docker run --rm cerebro-herramientas process_raw.sh <file>  → .txt
-    2. docker exec cerebro-agente hermes chat -q "Sintetiza: <txt>"  → wiki page
+    1. docker compose run --rm herramientas process_raw.sh <file>  → .txt
+    2. docker compose exec sistema-agente hermes chat -q "Sintetiza: <txt>"  → wiki page
     3. Guarda resultado en wiki/<stem>.md
     """
     file_path = request.get("path", "")
@@ -2269,15 +2151,8 @@ async def process_raw_file(request: dict):
     if not api_key:
         raise HTTPException(status_code=400, detail="No hay API key configurada")
 
-    # ponytail: obtener host path del vault via Docker SDK (igual que start_agent_container)
-    client = get_docker_client()
-    vault_host = VAULT_PATH
-    if client:
-        try:
-            bc = client.containers.get("cerebro-backend")
-            vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
-        except Exception:
-            pass
+    # ponytail: vault host path from env var
+    vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
 
     # 1. Extraer texto con herramientas
     try:
@@ -2359,14 +2234,7 @@ async def process_folder(request: dict):
         raise HTTPException(status_code=400, detail="No hay API key configurada")
 
     # ponytail: obtener host path del vault
-    client = get_docker_client()
-    vault_host = VAULT_PATH
-    if client:
-        try:
-            bc = client.containers.get("cerebro-backend")
-            vault_host = _get_backend_mount_source(bc, "/app/vault") or VAULT_PATH
-        except Exception:
-            pass
+    vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
 
     # 1. Extraer texto de cada archivo
     topic = folder.name
@@ -2405,7 +2273,7 @@ Textos:{combined[:12000]}"""
     try:
         result = subprocess.run(
             ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-             "cerebro-agente", "/usr/local/lib/hermes-agent/venv/bin/hermes",
+             "sistema-agente", "/usr/local/lib/hermes-agent/venv/bin/hermes",
              "chat", "-q", prompt],
             capture_output=True, text=True, timeout=120
         )
@@ -2448,21 +2316,113 @@ Textos:{combined[:12000]}"""
 @app.get("/api/containers/status")
 async def containers_status():
     """Devuelve el estado de todos los contenedores del sistema."""
-    client = get_docker_client()
-    if not client:
-        return {"error": "Docker no disponible"}
+    result = subprocess.run(_compose_cmd("ps", "--format", "json"), capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        return {"error": "docker compose no disponible"}
 
-    containers = {}
-    for name in ["cerebro-backend", "cerebro-frontend", "cerebro-agente", "cerebro-herramientas"]:
+    # ponytail: parse compose ps output for service status
+        containers = {}
         try:
-            c = client.containers.get(name)
-            c.reload()
-            containers[name] = {
-                "status": c.status,
-                "running": c.status == "running",
-                "ports": c.ports if hasattr(c, 'ports') else {}
-            }
+            services = json.loads(result.stdout) if result.stdout.strip() else []
+            for svc in services:
+                name = svc.get("Service", svc.get("Name", "unknown"))
+                containers[name] = {
+                    "status": "running" if svc.get("State", "") == "running" else svc.get("State", "unknown"),
+                    "image": svc.get("Image", ""),
+                }
         except Exception:
-            containers[name] = {"status": "not_found", "running": False}
+            pass
 
-    return {"containers": containers}
+        return {"containers": containers}
+
+# ============================================
+# ENDPOINTS PARA CLOUDFLARE TUNNEL
+# ============================================
+
+@app.get("/api/tunnel/status")
+async def tunnel_status():
+    config = get_agent_config()
+    if not config:
+        return {"active": False, "hasToken": False}
+    token = config.get("cloudflareTunnelToken", "")
+    return {"active": bool(token), "hasToken": bool(token)}
+
+
+@app.post("/api/tunnel/configure")
+async def tunnel_configure(request: dict):
+    token = request.get("cloudflareTunnelToken", "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token requerido")
+
+    config = get_agent_config()
+    if not config:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+
+    config["cloudflareTunnelToken"] = token
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+
+    # ponytail: write token to .env on host via VAULT_HOST_PATH
+    vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+    env_path = os.path.join(vault_host, "..", ".env") if vault_host != VAULT_PATH else "/app/.env"
+    try:
+        # Read current .env, update/add CLOUDFLARE_TUNNEL_TOKEN
+        env_lines = []
+        env_file = os.path.join(os.path.dirname(vault_host), ".env") if vault_host != VAULT_PATH else None
+        if env_file and os.path.exists(env_file):
+            with open(env_file, "r") as f:
+                env_lines = f.readlines()
+            updated = False
+            for i, line in enumerate(env_lines):
+                if line.startswith("CLOUDFLARE_TUNNEL_TOKEN="):
+                    env_lines[i] = f"CLOUDFLARE_TUNNEL_TOKEN={token}\n"
+                    updated = True
+                    break
+            if not updated:
+                env_lines.append(f"CLOUDFLARE_TUNNEL_TOKEN={token}\n")
+            with open(env_file, "w") as f:
+                f.writelines(env_lines)
+    except Exception as e:
+        print(f"⚠️ No se pudo escribir .env: {e}")
+
+    # Start cloudflared via compose
+    result = subprocess.run(
+        _compose_cmd("--profile", "tunnel", "up", "-d", "cloudflared"),
+        capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        return {"success": False, "message": f"Token guardado pero error al iniciar tunnel: {result.stderr}"}
+
+    return {"success": True, "message": "Túnel configurado y activado"}
+
+
+@app.post("/api/tunnel/deactivate")
+async def tunnel_deactivate():
+    config = get_agent_config()
+    if not config:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+
+    config["cloudflareTunnelToken"] = ""
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+
+    subprocess.run(
+        _compose_cmd("stop", "cloudflared"),
+        capture_output=True, timeout=30
+    )
+
+    return {"success": True, "message": "Túnel desactivado"}
+
+
+# ============================================
+# ENDPOINT DE VERSION
+# ============================================
+
+@app.get("/api/version")
+async def get_version():
+    version_file = Path("/app/VERSION")
+    if version_file.exists():
+        version = version_file.read_text().strip()
+    else:
+        version = "unknown"
+    return {"current": version, "githubRepo": os.getenv("GITHUB_REPO", "")}
