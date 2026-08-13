@@ -28,9 +28,10 @@ vault/
 frontend/node_modules/
 frontend/dist/
 
-# IDE
+# IDE / tools
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 
