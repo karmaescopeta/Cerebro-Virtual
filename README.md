@@ -4,6 +4,21 @@ Tu segundo cerebro: un sistema de conocimiento personal que organiza lo que lees
 
 ---
 
+## ¿Qué puede hacer Cerebro Virtual?
+
+- **Organizar documentos** — sube PDFs, textos, imágenes, lo que sea. Todo va al vault, estructurado y buscable.
+- **Chat con IA** — habla con 5 perfiles especializados (coordinador, editor, indexador, sintetizador, investigador). Cada uno hace lo suyo: el coordinador recibe tu mensaje y decide a quién delegar.
+- **Procesar archivos** — cuando subes algo, la IA lo lee, lo resume, lo indexa y lo convierte en páginas wiki con enlaces cruzados.
+- **Grafo de conocimiento** — visualización de cómo se conecta todo lo que sabes. Dos modos: Estructura (árbol) y Neuronas (red de conexiones).
+- **SearXNG** — buscador web privado integrado. La IA puede buscar en internet sin mandarte a un rastreador.
+- **Modelos configurables** — cada perfil puede usar un modelo distinto (DeepSeek, Gemini, etc.) vía OpenRouter. Tú eliges cuál.
+- **Exportar / importar vault** — copia de seguridad completa en un `.tar.gz`. Llévatelo a otro dispositivo.
+- **Acceso remoto opcional** — conéctate desde el móvil u otro PC vía Cloudflare Tunnel (ver más abajo).
+- **Multi-instancia** — puedes tener varios cerebros en el mismo ordenador, cada uno aislado.
+- **Todo en tu ordenador** — tus datos no salen a la nube. La IA sí habla con OpenRouter, pero tus documentos se quedan en tu disco.
+
+---
+
 ## ¿Qué necesitas antes de empezar?
 
 Solo dos cosas, ambas gratis:
@@ -75,8 +90,6 @@ Rellena solo lo que necesites:
 - Lo demás déjalo como está, salvo que sepas que otro programa usa esos puertos.
 
 Guarda el archivo y ciérralo. Ese archivo `.env` es **solo tuyo**: no se sube a internet, no lo ve nadie más.
-
-> ¿Quieres acceder a tu Cerebro desde fuera de casa (móvil, otro PC)? Entonces sí necesitas un token de Cloudflare Tunnel. Es opcional y lo puedes configurar más adelante desde el propio Cerebro, en Ajustes. Si no sabes qué es esto, ignóralo.
 
 ### 3. Encender Cerebro Virtual
 
@@ -155,6 +168,36 @@ docker compose down
 ## ¿Dónde se guardan mis datos?
 
 Todo lo que subes y genera Cerebro Virtual vive en la carpeta `vault/` dentro del proyecto. Es solo tuyo, no se sube a internet, no lo ve nadie más. Si borras la carpeta, pierdes tus datos (haz copias con el botón Exportar en Ajustes).
+
+---
+
+## Acceso remoto: Cloudflare Tunnel (opcional)
+
+Si solo vas a usar Cerebro Virtual en este ordenador, **ignora esta sección**. Es para acceder desde el móvil, una tablet u otro PC fuera de casa.
+
+Cloudflare Tunnel crea un pasadizo seguro entre tu Cerebro y una dirección pública. Tu router no se abre, tu IP no se expone. Solo tú (con tu cuenta de Google) entras.
+
+### ¿Cómo se configura?
+
+1. Ve a https://one.dash.cloudflare.com/ y créate una cuenta (gratis).
+2. En el panel, ve a **Networks → Tunnels → Create a tunnel**.
+3. Sigue los pasos. Te dará un **token** largo (empieza por `eyJ...`).
+4. Copia ese token y pégalo en tu `.env`:
+   ```
+   CLOUDFLARE_TUNNEL_TOKEN=eyJ...todo-el-token...
+   ```
+5. Reinicia Cerebro Virtual (`docker compose up -d`).
+6. En el panel de Cloudflare, configura el túnel para que apunte a `http://cerebro-frontend:5173` (o el puerto que pusiste).
+
+Ya puedes acceder desde el móvil con la URL que te dé Cloudflare (`https://tu-tunnel.trycloudflare.com` o el dominio que configures).
+
+### ¿Y si no lo quiero?
+
+No lo configures. Cerebro funciona igual, solo en `localhost`. Si ya lo activaste y lo quieres quitar: borra el token del `.env`, o ve a Ajustes → "Desactivar túnel".
+
+### ¿Es seguro?
+
+Sí. El túnel va cifrado. El acceso lo controlas desde Cloudflare Zero Trust: puedes exigir login con Google, restringirlo a tu correo, y cerrarlo cuando quieras. Nadie entra sin tu permiso.
 
 ---
 
