@@ -128,7 +128,7 @@ function AjustesView({
         </div>
       </section>
 
-      {/* Canales */}
+      {/* Canales de Mensajería */}
       <section style={{ marginBottom: 'var(--space-8)' }}>
         <h2 className="section-heading">Canales de Mensajería</h2>
         <div className="card">
@@ -138,13 +138,16 @@ function AjustesView({
             <span style={{ color: 'var(--color-primary)', fontWeight: 600 }}> WhatsApp</span> mediante el puente Hermes.
           </p>
           <div style={{ marginTop: 'var(--space-4)', textAlign: 'right' }}>
-            <a href="http://localhost:8080" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', fontSize: 14, fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+            <a href="/agent/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', fontSize: 14, fontWeight: 600, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 'var(--space-2)' }}>
               Ir al Panel de Hermes
               <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span>
             </a>
           </div>
         </div>
       </section>
+
+      {/* Acceso Remoto */}
+      <TunnelSection />
 
       {/* Zona Peligrosa */}
       <section style={{ borderTop: '1px solid var(--color-surface-container)', paddingTop: 'var(--space-8)', position: 'relative', overflow: 'hidden' }}>
@@ -184,6 +187,113 @@ function InfoRow({ label, value, mono, last }) {
       <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>{label}</span>
       <span style={{ fontFamily: mono ? 'var(--font-mono)' : 'inherit', fontSize: mono ? 13 : 14, color: mono ? 'var(--color-text-secondary)' : 'var(--color-text-primary)' }}>{value}</span>
     </div>
+  )
+}
+
+function TunnelSection() {
+  const [tunnelStatus, setTunnelStatus] = React.useState(null)
+  const [showForm, setShowForm] = React.useState(false)
+  const [token, setToken] = React.useState('')
+  const [saving, setSaving] = React.useState(false)
+  const [msg, setMsg] = React.useState('')
+
+  React.useEffect(() => {
+    fetch('/api/tunnel/status').then(r => r.json()).then(setTunnelStatus).catch(() => {})
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    setMsg('')
+    try {
+      const res = await fetch('/api/tunnel/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cloudflareTunnelToken: token }),
+      })
+      const data = await res.json()
+      if (data.success) {
+        setTunnelStatus({ active: true, hasToken: true })
+        setShowForm(false)
+        setMsg('Túnel activado correctamente')
+      } else {
+        setMsg(data.message || 'Error al configurar')
+      }
+    } catch (e) {
+      setMsg('Error: ' + e.message)
+    }
+    setSaving(false)
+  }
+
+  const handleDeactivate = async () => {
+    setSaving(true)
+    try {
+      const res = await fetch('/api/tunnel/deactivate', { method: 'POST' })
+      const data = await res.json()
+      if (data.success) {
+        setTunnelStatus({ active: false, hasToken: false })
+        setMsg('Túnel desactivado')
+      }
+    } catch (e) {
+      setMsg('Error: ' + e.message)
+    }
+    setSaving(false)
+  }
+
+  const active = tunnelStatus?.active
+
+  return (
+    <section style={{ marginBottom: 'var(--space-8)' }}>
+      <h2 className="section-heading">
+        <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: 18 }}>cloud</span>
+        Acceso Remoto
+      </h2>
+      <div className="card">
+        {active ? (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
+              <span style={{ fontWeight: 600 }}>Túnel Activo</span>
+              <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>Cloudflare Tunnel conectado</span>
+            </div>
+            <button className="btn-app btn-app-danger" onClick={handleDeactivate} disabled={saving}>
+              {saving ? '...' : 'Desactivar'}
+            </button>
+          </div>
+        ) : showForm ? (
+          <div>
+            <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
+              Pega el token de tu Cloudflare Tunnel. Créalo en <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)' }}>Cloudflare Zero Trust</a>.
+            </p>
+            <input
+              className="input-app"
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="Token del tunnel..."
+              style={{ marginBottom: 'var(--space-3)' }}
+            />
+            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+              <button className="btn-app btn-app-primary" onClick={handleSave} disabled={saving || !token.trim()}>
+                {saving ? 'Configurando...' : 'Activar Túnel'}
+              </button>
+              <button className="btn-app btn-app-secondary" onClick={() => setShowForm(false)}>Cancelar</button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <span style={{ fontWeight: 600 }}>Sin túnel configurado</span>
+              <p style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>Acceso solo en LAN. Activa un túnel para acceso remoto.</p>
+            </div>
+            <button className="btn-app btn-app-primary" onClick={() => setShowForm(true)}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>cloud</span>
+              Iniciar Túnel
+            </button>
+          </div>
+        )}
+        {msg && <div style={{ marginTop: 'var(--space-3)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)', background: 'rgba(173,198,255,0.15)', color: 'var(--color-primary)', fontSize: 14 }}>{msg}</div>}
+      </div>
+    </section>
   )
 }
 

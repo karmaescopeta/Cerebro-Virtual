@@ -1,8 +1,0 @@
-{
-  "defaultModel": "deepseek/deepseek-v4-flash",
-  "availableModels": [
-    "deepseek/deepseek-v4-flash",
-    "deepseek/deepseek-v4-flash-latest"
-  ],
-  "provider": "openrouter"
-}

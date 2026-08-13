@@ -27,6 +27,7 @@ function SetupWizard({ onComplete }) {
     personality:
       'Eres un asistente de IA técnico y preciso. Respondes con claridad, priorizando el código, la arquitectura de sistemas y la resolución de problemas estructurada.',
     apiKey: '',
+    cloudflareTunnelToken: '',
     channels: { telegram: false, whatsapp: false, discord: false },
     telegramToken: '',
     discordToken: '',
@@ -71,6 +72,7 @@ function SetupWizard({ onComplete }) {
           agentName: formData.agentName,
           personality: formData.personality,
           apiKey: formData.apiKey,
+          cloudflareTunnelToken: formData.cloudflareTunnelToken,
           modelMode: 'openrouter',
           channels: formData.channels,
           dashboardUser: formData.dashboardUser,

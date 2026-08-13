@@ -33,6 +33,24 @@ function WizardStep1({ formData, errors, updateForm, onNext }) {
             </div>
           </div>
 
+          {/* Cloudflare Tunnel (opcional) */}
+          <div className="form-group">
+            <label className="form-label">
+              Cloudflare Tunnel <span style={{ color: 'var(--color-text-secondary)', fontWeight: 400 }}>(opcional)</span>
+            </label>
+            <input
+              type="password"
+              className="form-input"
+              value={formData.cloudflareTunnelToken || ''}
+              onChange={(e) => updateForm('cloudflareTunnelToken', e.target.value)}
+              placeholder="Token del tunnel..."
+            />
+            <div className="form-hint">
+              <span className="material-symbols-outlined">cloud</span>
+              <p>Acceso remoto seguro. Crea un tunnel en <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer">Cloudflare Zero Trust</a> y pega el token aquí. Omitelo si solo usarás en LAN.</p>
+            </div>
+          </div>
+
           {/* Agent Name */}
           <div className="form-group">
             <label className="form-label">Nombre del Agente</label>

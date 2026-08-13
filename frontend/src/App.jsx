@@ -11,6 +11,7 @@ import GrafoView from './components/views/GrafoView'
 import ModelosView from './components/views/ModelosView'
 import AjustesView from './components/views/AjustesView'
 import ExportPopup from './components/shared/ExportPopup'
+import VersionBanner from './components/shared/VersionBanner'
 
 function App() {
   const [loading, setLoading] = useState(true)
@@ -422,6 +423,7 @@ function App() {
 
   return (
     <div className="app-shell">
+      <VersionBanner />
       <Header status={status} />
       <Sidebar activeTab={activeTab} onTabChange={setActiveTab} agentName={editAgentName} />
       <main className="app-main">
