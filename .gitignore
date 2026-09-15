@@ -41,3 +41,16 @@ Thumbs.db
 
 # OpenSpec (keep specs, ignore nothing special)
 # openspec/ is tracked normally
+
+# Local artifacts
+node_modules/
+instances/
+tests/__pycache__/
+installer/build/
+installer/dist/
+installer/__pycache__/
+
+../cerebro-release/
+
+# release artifacts (repo hermano)
+cerebro-release/

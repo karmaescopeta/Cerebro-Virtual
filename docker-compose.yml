@@ -12,11 +12,15 @@ services:
       - VAULT_HOST_PATH=${VAULT_HOST_PATH:-}
       - COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME:-cerebrovirtual}
       - GITHUB_REPO=${GITHUB_REPO:-}
+      - OMNIROUTE_MANAGE_PASSWORD=${OMNIROUTE_MANAGE_PASSWORD:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
     volumes:
-      - ./vault:/app/vault
-      - ./sistema-agente:/app/sistema-agente:ro
+      - ${VAULT_DIR:-./vault}:/app/vault
+      - ${AGENT_CONFIG_DIR:-./sistema-agente/config}:/app/sistema-agente/config:ro
       - ./herramientas:/app/herramientas:ro
       - ./VERSION:/app/VERSION:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ${ENV_FILE:-./.env}:/app/.env:rw
       - /var/run/docker.sock:/var/run/docker.sock
     networks:
       - cerebro-network
@@ -41,8 +45,8 @@ services:
     ports:
       - "${AGENT_PORT:-8080}:8080"
     volumes:
-      - ./vault:/app/vault
-      - ./sistema-agente/config:/app/config
+      - ${VAULT_DIR:-./vault}:/app/vault
+      - ${AGENT_CONFIG_DIR:-./sistema-agente/config}:/app/config
     networks:
       - cerebro-network
     depends_on:
@@ -51,6 +55,7 @@ services:
       - VAULT_PATH=/app/vault
       - CONFIG_PATH=/app/config/agent-config.yaml
       - HERMES_CONFIG=/app/vault/system/agent-config.json
+      - OMNIROUTE_API_KEY=${OMNIROUTE_API_KEY:-omniroute}
 
   searxng:
     image: searxng/searxng:latest
@@ -70,10 +75,10 @@ services:
       dockerfile: Dockerfile
     restart: "no"
     volumes:
-      - ./vault:/app/vault
+      - ${VAULT_DIR:-./vault}:/app/vault
     environment:
-      - OPENAI_BASE_URL=https://openrouter.ai/api/v1
-      - OPENAI_API_KEY=${OPENROUTER_API_KEY}
+      - OPENAI_BASE_URL=http://omniroute:20128/v1
+      - OPENAI_API_KEY=${OMNIROUTE_API_KEY:-omniroute}
       - GRAPHIFY_OPENAI_MODEL=google/gemma-4-26b-a4b-it:free
     networks:
       - cerebro-network
@@ -91,6 +96,36 @@ services:
     profiles:
       - tunnel
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-models:/root/.ollama
+    networks:
+      - cerebro-network
+
+  omniroute:
+    image: diegosouzapw/omniroute:latest
+    restart: unless-stopped
+    ports:
+      - "${OMNIROUTE_PORT:-20128}:20128"
+    environment:
+      - PORT=20128
+      - DATA_DIR=/app/data
+      - INITIAL_PASSWORD=${OMNIROUTE_MANAGE_PASSWORD:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+    volumes:
+      - omniroute-data:/app/data
+    networks:
+      - cerebro-network
+    # ponytail: sin puerto host — dashboard vía nginx /omniroute/, API vía red interna
+    depends_on:
+      - ollama
+
 networks:
   cerebro-network:
     driver: bridge
+
+volumes:
+  ollama-models:
+  omniroute-data:

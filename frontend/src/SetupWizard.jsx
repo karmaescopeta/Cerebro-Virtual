@@ -7,12 +7,11 @@ import WizardStep2 from './components/wizard/WizardStep2'
 import WizardStep3 from './components/wizard/WizardStep3'
 
 const DEFAULT_MODELS = {
-  coordinador: 'deepseek/deepseek-v4-flash',
-  editor: 'deepseek/deepseek-v4-flash',
-  indexador: 'deepseek/deepseek-v4-flash',
-  sintetizador: 'deepseek/deepseek-v4-flash',
-  investigador: 'deepseek/deepseek-v4-flash',
-  graphify: 'google/gemma-4-26b-a4b-it:free',
+  'chat-default': 'combo/cerebro-default',
+  'chat-smart': 'combo/cerebro-smart',
+  'cerebro': 'combo/cerebro-cerebro',
+  'investigador': 'combo/cerebro-smart',
+  'graphify': 'combo/cerebro-graphify',
 }
 
 function SetupWizard({ onComplete }) {
@@ -35,6 +34,8 @@ function SetupWizard({ onComplete }) {
     dashboardUser: '',
     dashboardPassword: '',
     models: { ...DEFAULT_MODELS },
+    iaMode: 'both',
+    localModels: [],
   })
 
   useEffect(() => {
@@ -81,6 +82,7 @@ function SetupWizard({ onComplete }) {
           discordToken: formData.discordToken,
           whatsappPhone: formData.whatsappPhone,
           models: formData.models,
+          iaMode: formData.iaMode,
         }),
       })
       const configureData = await configureRes.json()
@@ -100,7 +102,7 @@ function SetupWizard({ onComplete }) {
 
       log('🎉 ¡Cerebro virtual creado con éxito!')
       setLoading(false)
-      setStep(3)
+      setStep(4)
     } catch (error) {
       console.error('Error en la instalación:', error)
       log('❌ Error: ' + error.message)

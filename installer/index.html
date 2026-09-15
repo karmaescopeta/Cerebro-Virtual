@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cerebro Virtual — Instalador</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/icon?family=Material+Symbols+Outlined" rel="stylesheet">
+<style>
+:root {
+  --color-bg: #0e0e0e; --color-surface: #1c1b1b; --color-surface-container: #201f1f;
+  --color-surface-high: #2a2a2a; --color-surface-highest: #353534;
+  --color-border: #424754; --color-text-primary: #e5e2e1; --color-text-secondary: #c2c6d6;
+  --color-text-tertiary: #8c909f; --color-primary: #adc6ff; --color-on-primary: #002e6a;
+  --color-primary-glow: rgba(173,198,255,0.3); --color-success: #4edea3; --color-error: #ffb4ab;
+  --color-error-container: #93000a;
+  --font-body: 'Inter', sans-serif; --font-mono: 'JetBrains Mono', monospace;
+  --radius-md: 8px; --radius-lg: 12px; --radius-full: 9999px;
+  --transition-fast: 0.15s ease; --shadow-glow: 0 0 15px var(--color-primary-glow);
+  --shadow-card: 0 25px 50px -12px rgba(0,0,0,0.5);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: var(--font-body); background: var(--color-bg); color: var(--color-text-primary); min-height:100vh; padding:32px; }
+h1 { font-size:28px; font-weight:700; } h2 { font-size:20px; font-weight:600; margin-bottom:16px; }
+.subtitle { color: var(--color-text-tertiary); font-size:14px; margin-top:4px; }
+.card { background: var(--color-surface); border-radius: var(--radius-lg); padding:24px; box-shadow: var(--shadow-card); margin-bottom:24px; }
+.btn { display:inline-flex; align-items:center; gap:8px; padding:10px 20px; border-radius: var(--radius-md); font-size:14px; font-weight:500; border:none; cursor:pointer; transition: var(--transition-fast); }
+.btn-primary { background: var(--color-primary); color: var(--color-on-primary); }
+.btn-primary:hover { box-shadow: var(--shadow-glow); }
+.btn-secondary { background: var(--color-surface-high); color: var(--color-text-primary); border:1px solid var(--color-border); }
+.btn-secondary:hover { background: var(--color-surface-highest); }
+.btn-danger { background: var(--color-error-container); color: var(--color-error); border:1px solid var(--color-error); }
+.btn-danger:hover { opacity:0.85; }
+.btn:disabled { opacity:0.5; cursor:not-allowed; }
+.btn .material-symbols-outlined { font-size:18px; }
+.input { width:100%; padding:10px 14px; background: var(--color-surface-container); border:1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); font-size:14px; outline:none; transition: var(--transition-fast); }
+.input:focus { border-color: var(--color-primary); }
+table { width:100%; border-collapse:collapse; }
+th,td { text-align:left; padding:12px 16px; border-bottom:1px solid var(--color-border); }
+th { color: var(--color-text-tertiary); font-size:12px; font-weight:500; text-transform:uppercase; letter-spacing:0.5px; }
+td { font-size:14px; }
+.badge { display:inline-block; padding:3px 10px; border-radius: var(--radius-full); font-size:12px; font-weight:500; }
+.badge-running { background:rgba(78,222,163,0.15); color: var(--color-success); }
+.badge-stopped { background: var(--color-surface-high); color: var(--color-text-tertiary); }
+.badge-ok { background:rgba(78,222,163,0.15); color: var(--color-success); }
+.badge-fail { background:rgba(255,180,171,0.15); color: var(--color-error); }
+.header { display:flex; justify-content:space-between; align-items:center; margin-bottom:32px; }
+.req-row { display:flex; align-items:center; justify-content:space-between; padding:12px 0; border-bottom:1px solid var(--color-border); }
+.req-row:last-child { border:none; }
+.req-name { font-size:14px; font-weight:500; }
+.req-version { font-size:13px; color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.req-link { font-size:12px; color: var(--color-primary); text-decoration:none; }
+.req-link:hover { text-decoration:underline; }
+.modal-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:1000; }
+.modal { background: var(--color-surface); border-radius: var(--radius-lg); padding:32px; max-width:500px; width:90%; box-shadow: var(--shadow-card); }
+.modal h2 { margin-bottom:20px; } .modal-actions { display:flex; gap:12px; justify-content:flex-end; margin-top:24px; }
+.toast { position:fixed; bottom:24px; right:24px; padding:12px 20px; border-radius: var(--radius-md); font-size:14px; font-weight:500; z-index:2000; animation:slideIn 0.3s ease; }
+.toast-success { background:rgba(78,222,163,0.15); color: var(--color-success); border:1px solid var(--color-success); }
+.toast-error { background:rgba(255,180,171,0.15); color: var(--color-error); border:1px solid var(--color-error); }
+@keyframes slideIn { from{transform:translateX(100%);opacity:0;} to{transform:translateX(0);opacity:1;} }
+.loading-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center; z-index:3000; }
+.loading-box { text-align:center; }
+.loading-box p { margin-top:16px; color: var(--color-text-secondary); }
+.spinner { width:20px; height:20px; border:2px solid var(--color-surface-high); border-top:2px solid var(--color-primary); border-radius:50%; animation:spin 0.8s linear infinite; display:inline-block; }
+@keyframes spin { to{transform:rotate(360deg);} }
+.empty-state { text-align:center; padding:40px; color: var(--color-text-tertiary); }
+.empty-state .material-symbols-outlined { font-size:48px; opacity:0.3; margin-bottom:16px; }
+.actions-cell { display:flex; gap:8px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+function toast(msg, type='success') {
+  const el = document.createElement('div'); el.className = `toast toast-${type}`; el.textContent = msg;
+  document.body.appendChild(el); setTimeout(() => el.remove(), 3000);
+}
+async function api(path, opts={}) {
+  const ctrl = new AbortController(); const timer = setTimeout(() => ctrl.abort(), 600000);
+  try { const res = await fetch(path, {...opts, signal: ctrl.signal}); clearTimeout(timer); return await res.json(); }
+  catch(e) { clearTimeout(timer); return {error: e.name === 'AbortError' ? 'Timeout' : e.message}; }
+}
+function showLoading(text) {
+  const el = document.createElement('div'); el.className = 'loading-overlay'; el.id = 'loading';
+  el.innerHTML = `<div class="loading-box"><div class="spinner"></div><p>${text}</p></div>`;
+  document.body.appendChild(el);
+}
+function hideLoading() { const el = document.getElementById('loading'); if (el) el.remove(); }
+
+async function render() {
+  const req = await api('/api/requirements');
+  const inst = await api('/api/instances');
+  const checks = req.checks || [];
+  const allOk = checks.every(c => c.ok);
+
+  document.getElementById('app').innerHTML = `
+    <div class="header">
+      <div><h1>Cerebro Virtual</h1><p class="subtitle">Gestor de instancias</p></div>
+      <button class="btn btn-primary" onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>
+    </div>
+    <div class="card">
+      <h2>Requisitos del Sistema</h2>
+      ${checks.map(c => `<div class="req-row"><div><div class="req-name">${c.name}</div><div class="req-version">${c.version || (c.ok?'OK':'No encontrado')}</div></div><div style="display:flex;gap:12px;align-items:center;">${c.ok?'<span class="badge badge-ok">✓ OK</span>':`<span class="badge badge-fail">✗ Faltante</span>${c.url?`<a class="req-link" href="${c.url}" target="_blank">Descargar</a>`:''}`}</div></div>`).join('')}
+    </div>
+    ${!allOk ? '<div class="card" style="border:1px solid var(--color-error);"><p style="color:var(--color-error);font-size:14px;">⚠ Faltan requisitos. Instala lo necesario antes de continuar.</p></div>' : ''}
+    <div class="card">
+      <h2>Cerebros instalados (${inst.count || 0})</h2>
+      ${(inst.instances||[]).length ? `<table><thead><tr><th>Nombre</th><th>Frontend</th><th>Backend</th><th>Agente</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
+        ${(inst.instances||[]).map(i => `<tr><td style="font-weight:600;color:var(--color-primary);">${i.name}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.FRONTEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.BACKEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.AGENT_PORT||'-'}</td><td><span class="badge badge-${i.status==='running'?'running':'stopped'}">${i.status==='running'?'Activo':'Parado'}</span></td><td class="actions-cell">${i.status==='running'?`<button class="btn btn-secondary" style="padding:6px 12px;font-size:12px;" onclick="stopInst('${i.name}')">Parar</button>`:`<button class="btn btn-primary" style="padding:6px 12px;font-size:12px;" onclick="startInst('${i.name}')">Iniciar</button>`}<button class="btn btn-danger" style="padding:6px 12px;font-size:12px;" onclick="removeInst('${i.name}')">Borrar</button></td></tr>`).join('')}
+      </tbody></table>` : `<div class="empty-state"><span class="material-symbols-outlined">brain</span><p>No tienes cerebros creados.</p><p style="margin-top:8px;font-size:13px;">Crea el primero con el botón de arriba.</p></div>`}
+    </div>
+  `;
+}
+
+function showCreateModal() {
+  const m = document.createElement('div'); m.className = 'modal-overlay';
+  m.innerHTML = `<div class="modal"><h2>Crear nuevo cerebro</h2><p class="subtitle" style="margin-bottom:20px;">Elige un nombre. Solo letras, números, guiones y guiones bajos.</p><input class="input" id="new-name" placeholder="ej: cerebro2" pattern="[A-Za-z0-9_-]+" autofocus><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="create-btn">Crear</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#create-btn').onclick = async () => {
+    const name = m.querySelector('#new-name').value.trim();
+    if (!name) { toast('Nombre vacío', 'error'); return; }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) { toast('Solo letras, números, guiones y guiones bajos', 'error'); return; }
+    m.remove(); showLoading('Creando instancia...');
+    const d = await api('/api/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
+    hideLoading();
+    if (d.error) { toast(d.error, 'error'); return; }
+    toast(`${name} creado`); render();
+  };
+  m.querySelector('#new-name').onkeydown = e => { if (e.key==='Enter') m.querySelector('#create-btn').click(); };
+}
+
+async function startInst(n) { showLoading(`Iniciando ${n}...`); const d = await api(`/api/start/${encodeURIComponent(n)}`,{method:'POST'}); hideLoading(); d.error ? toast(d.error,'error') : (toast(`${n} iniciado`), render()); }
+async function stopInst(n) { showLoading(`Parando ${n}...`); const d = await api(`/api/stop/${encodeURIComponent(n)}`,{method:'POST'}); hideLoading(); d.error ? toast(d.error,'error') : (toast(`${n} parado`), render()); }
+async function removeInst(n) { if(!confirm(`¿Eliminar ${n}? Se borrarán todos los datos.`)) return; showLoading(`Eliminando ${n}...`); const d = await api(`/api/remove/${encodeURIComponent(n)}`,{method:'POST'}); hideLoading(); d.error ? toast(d.error,'error') : (toast(`${n} eliminado`), render()); }
+
+render();
+</script>
+</body>
+</html>

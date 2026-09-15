@@ -2,6 +2,8 @@
 # process_raw.sh — Detecta el tipo de archivo y aplica el pipeline correcto
 # Uso: process_raw.sh <archivo> [modelo_whisper]
 # Este script es llamado por el Sintetizador para pre-procesar archivos de raw/
+# Salida: .txt hermano (contenido Markdown desde markitdown; extensión .txt
+# porque el backend gestiona el hermano .txt en delete/rename/cleanup).
 
 set -e
 
@@ -52,10 +54,6 @@ print(result['text'], end='')
         echo "---"
         cat "$OUTPUT"
         ;;
-    pdf)
-        echo "📄 Archivo PDF detectado → extrayendo texto..."
-        bash /app/scripts/extract_pdf.sh "$INPUT"
-        ;;
     png|jpg|jpeg|bmp|tiff|tif|gif|webp)
         echo "🖼️ Imagen detectada → ejecutando OCR..."
         bash /app/scripts/ocr.sh "$INPUT"
@@ -65,28 +63,27 @@ print(result['text'], end='')
         cp "$INPUT" "$OUTPUT"
         echo "✅ Texto copiado a: $OUTPUT"
         ;;
-    doc|docx)
-        echo "📄 Documento Word detectado → extrayendo texto..."
-        python -c "
-import sys
-try:
-    from docx import Document
-    doc = Document('$INPUT')
-    text = '\n'.join([p.text for p in doc.paragraphs if p.text.strip()])
-    print(text, end='')
-except ImportError:
-    print('❌ python-docx no instalado. Instala con: pip install python-docx', file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f'❌ Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" > "$OUTPUT"
-        echo "✅ Texto extraído guardado en: $OUTPUT"
-        ;;
     *)
-        echo "⚠️ Tipo de archivo no soportado: $EXT_LOWER"
-        echo "Tipos soportados: video (mp4,avi,mkv,mov), audio (mp3,wav,m4a), PDF, imágenes (png,jpg), texto (txt,md), Word (doc,docx)"
-        exit 1
+        # ponytail: todo lo demás → markitdown (pdf/docx/xlsx/pptx/epub/html/csv/json/xml/…).
+        # Escaneado → salida vacía → fallback ocr.sh solo para pdf/imágenes.
+        echo "📄 Convirtiendo a Markdown con markitdown..."
+        if markitdown "$INPUT" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ] && [ "$(tr -d '[:space:]' < "$OUTPUT" | head -c 1)" != "" ]; then
+            echo "✅ Markdown guardado en: $OUTPUT"
+        else
+            rm -f "$OUTPUT"
+            case "$EXT_LOWER" in
+                pdf)
+                    echo "⚠️ markitdown sin texto (¿PDF escaneado?) → fallback OCR..."
+                    bash /app/scripts/ocr.sh "$INPUT"
+                    ;;
+                *)
+                    echo "❌ markitdown no pudo extraer contenido de: $BASENAME"
+                    exit 1
+                    ;;
+            esac
+        fi
+        echo "---"
+        cat "$OUTPUT"
         ;;
 esac
 

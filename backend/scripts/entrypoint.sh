@@ -81,4 +81,4 @@ echo "📦 Iniciando servidor..."
 echo "🔗 API disponible en: http://localhost:8000"
 echo "📊 Vault montado en: /app/vault"
 
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-include "app/*.py"
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app

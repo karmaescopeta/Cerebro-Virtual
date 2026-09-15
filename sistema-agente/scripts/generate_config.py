@@ -82,13 +82,15 @@ def main():
         }
 
     llm_config = {
-        "provider": "openrouter",
+        "provider": "custom",
+        "base_url": "http://omniroute:20128/v1",
         "default": default_model,
-        "api_key": api_key,
+        "api_key": os.getenv("OMNIROUTE_API_KEY", "omniroute"),
     }
     legacy_llm_config = {
-        "provider": "openrouter",
-        "api_key": api_key,
+        "provider": "custom",
+        "base_url": "http://omniroute:20128/v1",
+        "api_key": os.getenv("OMNIROUTE_API_KEY", "omniroute"),
         "model": default_model,
     }
 

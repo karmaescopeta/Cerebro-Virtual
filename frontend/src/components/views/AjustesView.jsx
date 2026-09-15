@@ -195,6 +195,7 @@ function TunnelSection() {
   const [showForm, setShowForm] = React.useState(false)
   const [token, setToken] = React.useState('')
   const [saving, setSaving] = React.useState(false)
+  const [loading, setLoading] = React.useState(false)
   const [msg, setMsg] = React.useState('')
 
   React.useEffect(() => {
@@ -203,6 +204,7 @@ function TunnelSection() {
 
   const handleSave = async () => {
     setSaving(true)
+    setLoading(true)
     setMsg('')
     try {
       const res = await fetch('/api/tunnel/configure', {
@@ -222,10 +224,12 @@ function TunnelSection() {
       setMsg('Error: ' + e.message)
     }
     setSaving(false)
+    setLoading(false)
   }
 
   const handleDeactivate = async () => {
     setSaving(true)
+    setLoading(true)
     try {
       const res = await fetch('/api/tunnel/deactivate', { method: 'POST' })
       const data = await res.json()
@@ -237,6 +241,7 @@ function TunnelSection() {
       setMsg('Error: ' + e.message)
     }
     setSaving(false)
+    setLoading(false)
   }
 
   const active = tunnelStatus?.active
@@ -247,7 +252,26 @@ function TunnelSection() {
         <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: 18 }}>cloud</span>
         Acceso Remoto
       </h2>
-      <div className="card">
+      <div className="card" style={{ position: 'relative', minHeight: 80 }}>
+        {loading && (
+          <div style={{
+            position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.5)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center', zIndex: 10,
+            borderRadius: 'inherit'
+          }}>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 'var(--space-3)' }}>
+              <div style={{
+                width: 32, height: 32, border: '3px solid rgba(255,255,255,0.2)',
+                borderTopColor: 'var(--color-primary)', borderRadius: '50%',
+                animation: 'spin 0.8s linear infinite'
+              }} />
+              <span style={{ color: 'var(--color-text-secondary)', fontSize: 14 }}>
+                {saving ? 'Configurando túnel...' : 'Desactivando túnel...'}
+              </span>
+            </div>
+          </div>
+        )}
         {active ? (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
@@ -255,28 +279,28 @@ function TunnelSection() {
               <span style={{ fontWeight: 600 }}>Túnel Activo</span>
               <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>Cloudflare Tunnel conectado</span>
             </div>
-            <button className="btn-app btn-app-danger" onClick={handleDeactivate} disabled={saving}>
+            <button className="btn-app btn-app-danger" onClick={handleDeactivate} disabled={saving || loading}>
               {saving ? '...' : 'Desactivar'}
             </button>
           </div>
         ) : showForm ? (
           <div>
             <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
-              Pega el token de tu Cloudflare Tunnel. Créalo en <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)' }}>Cloudflare Zero Trust</a>.
+              Pega el comando completo que te da la página de <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)' }}>Cloudflare Zero Trust</a>. El sistema extraerá el token automáticamente.
             </p>
             <input
               className="input-app"
-              type="password"
+              type="text"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder="Token del tunnel..."
+              placeholder="Pega aquí el comando de Cloudflare..."
               style={{ marginBottom: 'var(--space-3)' }}
             />
             <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-              <button className="btn-app btn-app-primary" onClick={handleSave} disabled={saving || !token.trim()}>
+              <button className="btn-app btn-app-primary" onClick={handleSave} disabled={saving || loading || !token.trim()}>
                 {saving ? 'Configurando...' : 'Activar Túnel'}
               </button>
-              <button className="btn-app btn-app-secondary" onClick={() => setShowForm(false)}>Cancelar</button>
+              <button className="btn-app btn-app-secondary" onClick={() => setShowForm(false)} disabled={loading}>Cancelar</button>
             </div>
           </div>
         ) : (

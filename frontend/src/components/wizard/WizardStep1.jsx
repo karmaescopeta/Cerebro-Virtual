@@ -39,15 +39,15 @@ function WizardStep1({ formData, errors, updateForm, onNext }) {
               Cloudflare Tunnel <span style={{ color: 'var(--color-text-secondary)', fontWeight: 400 }}>(opcional)</span>
             </label>
             <input
-              type="password"
+              type="text"
               className="form-input"
               value={formData.cloudflareTunnelToken || ''}
               onChange={(e) => updateForm('cloudflareTunnelToken', e.target.value)}
-              placeholder="Token del tunnel..."
+              placeholder="Pega aquí el comando de Cloudflare..."
             />
             <div className="form-hint">
               <span className="material-symbols-outlined">cloud</span>
-              <p>Acceso remoto seguro. Crea un tunnel en <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer">Cloudflare Zero Trust</a> y pega el token aquí. Omitelo si solo usarás en LAN.</p>
+              <p>Acceso remoto seguro. Crea un tunnel en <a href="https://www.cloudflare.com" target="_blank" rel="noopener noreferrer">Cloudflare Zero Trust</a>, copia el comando completo que te da la página y pégalo aquí. Omítelo si solo usarás en LAN.</p>
             </div>
           </div>
 
@@ -101,6 +101,7 @@ function WizardStep1({ formData, errors, updateForm, onNext }) {
                   placeholder="••••••••"
                 />
                 {errors.dashboardPassword && <span className="form-error">{errors.dashboardPassword}</span>}
+                <span className="form-hint">Esta contraseña abrirá el panel de Hermes y el panel de OmniRoute.</span>
               </div>
             </div>
           </div>
