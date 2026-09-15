@@ -6,10 +6,11 @@ const ITEMS = [
   { id: 'cerebro', icon: 'psychology', label: 'CEREBRO' },
   { id: 'graph', icon: 'hub', label: 'GRAFO' },
   { id: 'modelos', icon: 'memory', label: 'MODELOS' },
+  { id: 'updates', icon: 'update', label: 'ACTUALIZACIONES' },
   { id: 'settings', icon: 'settings', label: 'AJUSTES' },
 ]
 
-function Sidebar({ activeTab, onTabChange, agentName }) {
+function Sidebar({ activeTab, onTabChange, agentName, version }) {
   const items = ITEMS.map(i => i.id === 'chat' ? { ...i, label: (agentName || 'Hermes').toUpperCase() } : i)
   return (
     <aside className="app-sidebar">
@@ -25,16 +26,14 @@ function Sidebar({ activeTab, onTabChange, agentName }) {
           </button>
         ))}
       </nav>
-      <div className="sidebar-footer">
-        <div className="sidebar-version">
-          <div className="label">VERSION</div>
-          <div className="value">v1.0.4-stable</div>
+      {version && (
+        <div className="sidebar-footer">
+          <div className="sidebar-version">
+            <div className="label">VERSION</div>
+            <div className="value">v{version}</div>
+          </div>
         </div>
-        <button className="sidebar-item" style={{ color: 'var(--color-error)' }}>
-          <span className="material-symbols-outlined">logout</span>
-          <span>LOGOUT</span>
-        </button>
-      </div>
+      )}
     </aside>
   )
 }

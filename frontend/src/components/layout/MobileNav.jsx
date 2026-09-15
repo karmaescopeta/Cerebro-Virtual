@@ -6,6 +6,7 @@ const ITEMS = [
   { id: 'cerebro', icon: 'psychology', label: 'Cerebro' },
   { id: 'graph', icon: 'hub', label: 'Grafo' },
   { id: 'modelos', icon: 'memory', label: 'Modelos' },
+  { id: 'updates', icon: 'update', label: 'Updates' },
   { id: 'settings', icon: 'settings', label: 'Ajustes' },
 ]
 

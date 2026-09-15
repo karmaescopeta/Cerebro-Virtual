@@ -18,8 +18,18 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
   const [reassigning, setReassigning] = useState(false)
   // ponytail: modal último archivo
   const [lastFileModal, setLastFileModal] = useState(null) // {projects: [{id, name}], items: [...]}
+  const [wikiFiles, setWikiFiles] = useState(null)
 
   useEffect(() => { loadProjects() }, [subtab])
+  useEffect(() => { if (subtab === 'estructura') loadWikiStems() }, [subtab])
+
+  async function loadWikiStems() {
+    // ponytail: stems de wiki/ para marcar "Procesando…" — el grafo ya trae nodos wiki con source_file
+    try {
+      const d = await (await fetch('/api/wiki/graph')).json()
+      setWikiFiles((d.nodes || []).map(n => (n.source_file || '').split('/').pop()).filter(Boolean))
+    } catch { setWikiFiles([]) }
+  }
 
   async function loadProjects() {
     try { const d = await (await fetch('/api/projects')).json(); setProjects(d.projects || []) } catch {}
@@ -35,7 +45,10 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
       const parts = f.path.split('/')
       const folder = parts.length > 1 ? parts[0] : 'individual'
       if (!groups[folder]) groups[folder] = { name: folder, color: '#666', files: [] }
-      groups[folder].files.push({ ...f, category: 'raw' })
+      // ponytail: wiki_pending — raw sin wiki/<stem>.md y no es texto plano = aún procesando (o OCR falló)
+      const stem = f.name.replace(/\.[^.]+$/, '')
+      const hasWiki = wikiFiles?.includes(stem + '.md')
+      groups[folder].files.push({ ...f, category: 'raw', wiki_pending: !hasWiki && !['txt', 'md'].includes(f.ext) })
     })
     outputFiles.forEach(f => {
       const parts = f.path.split('/')
@@ -44,7 +57,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
       groups[folder].files.push({ ...f, category: 'outputs' })
     })
     return groups
-  }, [rawFiles, outputFiles, projects])
+  }, [rawFiles, outputFiles, projects, wikiFiles])
 
   const rawFlat = rawFiles.filter(f => f.ext !== 'folder')
   const files = subtab === 'raw' ? rawFlat : subtab === 'outputs' ? outputFiles : []
@@ -245,13 +258,13 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
           <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: 28 }}>science</span>
           <h1 className="section-title" style={{ marginBottom: 0 }}>Cerebro</h1>
         </div>
         {(subtab === 'estructura' || subtab === 'raw') && (
-          <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
+          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
             {subtab === 'estructura' && (
               <>
                 {editMode ? (
@@ -283,7 +296,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
       <p className="section-subtitle">Estructura organiza archivos por proyecto. Raw y Outputs muestran archivos planos.</p>
 
       {/* Tabs */}
-      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)' }}>
+      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)', flexWrap: 'wrap' }}>
         <TabButton active={subtab === 'estructura'} onClick={() => setSubtab('estructura')} icon="account_tree" label="Estructura" />
         <TabButton active={subtab === 'raw'} onClick={() => setSubtab('raw')} icon="inventory_2" label="Raw" count={rawFlat.length} />
         <TabButton active={subtab === 'outputs'} onClick={() => setSubtab('outputs')} icon="upload" label="Outputs" count={outputFiles.length} />
@@ -370,7 +383,15 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                           />
                         ) : (
                           <>
-                            <div style={{ fontWeight: 500, fontSize: 14 }}>{f.name}</div>
+                            <div style={{ fontWeight: 500, fontSize: 14 }}>
+                              {f.name}
+                              {f.category === 'raw' && f.wiki_pending && (
+                                <span title="Procesando a wiki en segundo plano" style={{ marginLeft: 6, fontSize: 11, color: 'var(--color-text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+                                  <span className="material-symbols-outlined" style={{ fontSize: 13, animation: 'spin 2s linear infinite', display: 'inline-block' }}>progress_activity</span>
+                                  Procesando…
+                                </span>
+                              )}
+                            </div>
                             <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginTop: 2 }}>
                               <span className="label-caps" style={{ color: f.category === 'raw' ? 'var(--color-primary)' : 'var(--color-success)' }}>{f.category}</span>
                               <span style={{ color: 'var(--color-text-tertiary)' }}>•</span>

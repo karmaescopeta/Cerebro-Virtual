@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import AddFilesPopup from '../shared/AddFilesPopup'
 import MarkdownViewer from '../shared/MarkdownViewer'
 
@@ -7,7 +7,8 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
   onInvestigate, onSaveOutput,
   activeSessionId, sessions, onNewSession, onSwitchSession, onDeleteSession, onRenameSession,
   chatSmart, setChatSmart, cerebroMode, setCerebroMode, internetMode, setInternetMode,
-  investigationMode, setInvestigationMode, selectedMessages, setSelectedMessages }) {
+  investigationMode, setInvestigationMode, selectedMessages, setSelectedMessages,
+  iaMode, iaLocal, onToggleIaLocal }) {
 
   const [showAddPopup, setShowAddPopup] = useState(false)
   const [showSessionPanel, setShowSessionPanel] = useState(false)
@@ -23,6 +24,15 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
   const [newProjectDesc, setNewProjectDesc] = useState('')
   const [newProjectColor, setNewProjectColor] = useState('#4edea3')
   const prevSmartRef = useRef(false) // ponytail: restaurar chatSmart al desactivar cerebro
+  const messagesRef = useRef(null) // ponytail: auto-scroll al enviar
+  const bottomRef = useRef(null) // ponytail: anchor para scrollIntoView
+
+  // ponytail: auto-scroll al fondo cuando llegan mensajes nuevos o loading
+  useEffect(() => {
+    if (bottomRef.current) {
+      bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    }
+  }, [chatMessages, chatLoading])
 
   const handleFileSelect = (files) => {
     if (!files || !files.length) return
@@ -139,7 +149,7 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
         )}
 
         {/* Messages */}
-        <div style={{ flex: 1, overflowY: 'auto', marginBottom: 'var(--space-4)', paddingLeft: showSessionPanel ? 'var(--space-4)' : 0 }}>
+        <div ref={messagesRef} style={{ flex: 1, overflowY: 'auto', marginBottom: 'var(--space-4)', paddingLeft: showSessionPanel ? 'var(--space-4)' : 0 }}>
           {chatMessages.length === 0 && !chatLoading && (
             <div style={{ textAlign: 'center', color: 'var(--color-text-tertiary)', padding: '3rem' }}>
               <span className="material-symbols-outlined" style={{ fontSize: 48, opacity: 0.3 }}>forum</span>
@@ -156,18 +166,26 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
                 borderRadius: 'var(--radius-md)',
                 borderTopRightRadius: msg.role === 'user' ? '2px' : 'var(--radius-md)',
                 borderTopLeftRadius: msg.role === 'assistant' ? '2px' : 'var(--radius-md)',
-                background: msg.role === 'user' ? 'var(--color-surface-high)' : 'var(--color-surface-container)',
-                border: '1px solid var(--color-surface-high)',
+                // ponytail: highlight visual si mensaje está seleccionado en modo investigar
+                background: investigationMode && selectedMessages.includes(i) ? 'rgba(173,198,255,0.15)' : msg.role === 'user' ? 'var(--color-surface-high)' : 'var(--color-surface-container)',
+                border: investigationMode && selectedMessages.includes(i) ? '1px solid var(--color-primary)' : '1px solid var(--color-surface-high)',
                 borderLeft: msg.role === 'assistant' ? '3px solid var(--color-primary)' : '1px solid var(--color-surface-high)',
               }}>
                 {msg.role === 'assistant' && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
                     <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--color-primary)', fontVariationSettings: "'FILL' 1" }}>electric_bolt</span>
                     <span className="label-caps" style={{ color: 'var(--color-primary)' }}>{(editAgentName || 'HERMES').toUpperCase()}</span>
+                    {/* ponytail: badge 🔒/☁️ = estado del toggle al enviar (ctx.local persiste en sesión) */}
+                    {msg.context && typeof msg.context.local === 'boolean' && (
+                      <span title={msg.context.local ? 'Respuesta generada localmente (privada)' : 'Respuesta generada por cloud'} style={{ fontSize: 13 }}>{msg.context.local ? '🔒' : '☁️'}</span>
+                    )}
                   </div>
                 )}
-                <div style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6, fontSize: 15 }}>
-                  {msg.content}
+                <div style={{ lineHeight: 1.6, fontSize: 15 }}>
+                  {/* ponytail: markdown en burbujas — MarkdownViewer ya existente; fallback pre-wrap para user/errores */}
+                  {msg.role === 'assistant'
+                    ? <MarkdownViewer content={msg.content} />
+                    : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
                   {msg.attachment && (
                     <div style={{ marginTop: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', background: 'var(--color-surface-high)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-surface-high)', fontSize: '0.85rem', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                       <span className="material-symbols-outlined" style={{ fontSize: 16 }}>attach_file</span>
@@ -187,14 +205,21 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
             </div>
           ))}
           {chatLoading && (
+            // ponytail: loading text dinámico según modo activo
+            (() => {
+              const loadingText = investigationMode ? 'Investigando...' : cerebroMode ? 'Buscando en mi cerebro...' : chatSmart ? 'Pensamiento profundo...' : 'Pensando...'
+              const loadingIcon = investigationMode ? 'search' : cerebroMode ? 'psychology' : chatSmart ? 'auto_awesome' : 'lightbulb'
+              return (
             <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
               <div style={{ padding: 'var(--space-4) var(--space-5)', background: 'var(--color-surface-container)', borderRadius: 'var(--radius-md)', borderTopLeftRadius: '2px', borderLeft: '3px solid var(--color-primary)', border: '1px solid var(--color-surface-high)' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', color: 'var(--color-text-secondary)', fontSize: 13 }}>
-                  <span className="material-symbols-outlined" style={{ fontSize: 18, animation: 'spin 2s linear infinite', display: 'inline-block' }}>search</span>
-                  Investigando...
+                  <span className="material-symbols-outlined" style={{ fontSize: 18, animation: 'spin 2s linear infinite', display: 'inline-block' }}>{loadingIcon}</span>
+                  {loadingText}
                 </div>
               </div>
             </div>
+              )
+            })()
           )}
           {chatUploading && (
             <div style={{ textAlign: 'center', color: 'var(--color-text-tertiary)', padding: 'var(--space-3)' }}>
@@ -202,6 +227,7 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
               Subiendo y procesando...
             </div>
           )}
+          <div ref={bottomRef} />
         </div>
       </div>
 
@@ -235,14 +261,14 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
           </button>
           {/* Chat inteligente — toggle */}
           <button onClick={() => setChatSmart(!chatSmart)} disabled={chatLoading || cerebroMode}
-            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading || cerebroMode ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: chatSmart ? 'rgba(173,198,255,0.15)' : 'transparent', border: chatSmart ? '1px solid var(--color-primary)' : '1px solid var(--color-surface-high)', color: chatSmart ? 'var(--color-primary)' : 'var(--color-text-tertiary)', opacity: cerebroMode ? 0.4 : 1, transition: 'all var(--transition-fast)' }}
+            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading || cerebroMode ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: chatSmart ? 'var(--color-primary)' : 'var(--color-surface-high)', border: chatSmart ? '1px solid var(--color-primary)' : '1px solid var(--color-border)', color: chatSmart ? '#0e0e0e' : 'var(--color-text-secondary)', opacity: cerebroMode ? 0.4 : 1, transition: 'all var(--transition-fast)' }}
             title="Chat con modelo más inteligente">
             <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: chatSmart ? "'FILL' 1" : 'normal' }}>auto_awesome</span>
             Chat inteligente
           </button>
           {/* Cerebro — toggle */}
           <button onClick={toggleCerebro} disabled={chatLoading}
-            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: cerebroMode ? 'rgba(78,222,163,0.15)' : 'transparent', border: cerebroMode ? '1px solid var(--color-success)' : '1px solid var(--color-surface-high)', color: cerebroMode ? 'var(--color-success)' : 'var(--color-text-tertiary)', transition: 'all var(--transition-fast)' }}
+            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: cerebroMode ? 'var(--color-success)' : 'var(--color-surface-high)', border: cerebroMode ? '1px solid var(--color-success)' : '1px solid var(--color-border)', color: cerebroMode ? '#0e0e0e' : 'var(--color-text-secondary)', transition: 'all var(--transition-fast)' }}
             title={cerebroMode ? 'Cerebro ON — busca en tu conocimiento' : 'Cerebro OFF — chat normal'}>
             <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: cerebroMode ? "'FILL' 1" : 'normal' }}>psychology</span>
             Cerebro
@@ -250,10 +276,19 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
           {/* Búsqueda Internet — solo visible si Cerebro ON */}
           {cerebroMode && (
             <button onClick={() => setInternetMode(!internetMode)} disabled={chatLoading}
-              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: internetMode ? 'rgba(173,198,255,0.15)' : 'transparent', border: internetMode ? '1px solid var(--color-primary)' : '1px solid var(--color-surface-high)', color: internetMode ? 'var(--color-primary)' : 'var(--color-text-tertiary)', transition: 'all var(--transition-fast)' }}
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: internetMode ? 'var(--color-primary)' : 'var(--color-surface-high)', border: internetMode ? '1px solid var(--color-primary)' : '1px solid var(--color-border)', color: internetMode ? '#0e0e0e' : 'var(--color-text-secondary)', transition: 'all var(--transition-fast)' }}
               title="Buscar también en internet">
               <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: internetMode ? "'FILL' 1" : 'normal' }}>public</span>
               Búsqueda en Internet
+            </button>
+          )}
+          {/* ponytail: toggle Local/Cloud — solo en modo both (local/cloud fijos se muestran como estado) */}
+          {iaMode && (iaMode.mode === 'both' || iaMode.localMode) && (
+            <button onClick={() => iaMode.mode === 'both' && onToggleIaLocal?.()} disabled={chatLoading}
+              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: iaMode.mode === 'both' && !chatLoading ? 'pointer' : 'default', fontSize: 13, fontWeight: 600, background: iaLocal ? 'var(--color-success)' : '#f59e0b', border: '1px solid', borderColor: iaLocal ? 'var(--color-success)' : '#f59e0b', color: '#0e0e0e', transition: 'all var(--transition-fast)' }}
+              title={iaMode.mode === 'both' ? (iaLocal ? 'Local — tus datos no salen de tu máquina' : 'Cloud — usa modelos en la nube') : (iaLocal ? 'Modo fijo: Local' : 'Modo fijo: Cloud')}>
+              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>{iaLocal ? 'lock' : 'cloud'}</span>
+              {iaLocal ? 'Local' : 'Cloud'}
             </button>
           )}
           {/* Investigar — toggle. Cuando activo, botón Investigar envía el input directo sin seleccionar mensajes */}
@@ -283,13 +318,14 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
           </div>
         </div>
         <input type="file" multiple ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => { if (e.target.files.length) { handleFileSelect(e.target.files); e.target.value = '' } }} />
-        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', background: 'var(--color-surface-high)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-md)', padding: 'var(--space-2)' }}>
+        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', background: 'var(--color-surface-high)', border: `1.5px solid ${iaLocal ? 'var(--color-success)' : '#f59e0b'}`, borderRadius: 'var(--radius-md)', padding: 'var(--space-2)', transition: 'border-color var(--transition-fast)' }}>
           <button onClick={() => fileInputRef.current?.click()} disabled={chatLoading || chatUploading} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-2)' }} title="Adjuntar archivo rápido">
             <span className="material-symbols-outlined">attach_file</span>
           </button>
           <input className="input-app" style={{ background: 'transparent', border: 'none', flex: 1 }}
             value={chatMessage} onChange={(e) => setChatMessage(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onSend() } }}
+            // ponytail: en modo investigar, Enter envía directo a investigate
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (investigationMode && chatMessage.trim()) { onInvestigate?.([{ role: 'user', content: chatMessage }]); setChatMessage('') } else { onSend() } } }}
             placeholder={cerebroMode ? (internetMode ? 'Pregunta al cerebro + internet...' : 'Pregunta al cerebro...') : 'Escribe tu pregunta... (arrastra archivos para adjuntar)'}
             disabled={chatLoading} />
           <button onClick={onSend} disabled={chatLoading || chatUploading} className="btn-app btn-app-primary" style={{ padding: 'var(--space-2) var(--space-3)' }}>

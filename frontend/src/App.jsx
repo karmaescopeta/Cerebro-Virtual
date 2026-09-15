@@ -10,6 +10,7 @@ import CerebroView from './components/views/CerebroView'
 import GrafoView from './components/views/GrafoView'
 import ModelosView from './components/views/ModelosView'
 import AjustesView from './components/views/AjustesView'
+import ActualizacionesView from './components/views/ActualizacionesView'
 import ExportPopup from './components/shared/ExportPopup'
 import VersionBanner from './components/shared/VersionBanner'
 
@@ -37,6 +38,11 @@ function App() {
   const [selectedMessages, setSelectedMessages] = useState([])
   const fileInputRef = useRef(null)
 
+  // IA mode (combo local/cloud)
+  const [iaMode, setIaMode] = useState(null)      // ia-mode.json: {mode, localMode, cloudMode, ...}
+  const [iaLocal, setIaLocal] = useState(false)   // toggle del chat (solo activo si mode=both)
+  const [iaAviso, setIaAviso] = useState(false)   // modal aviso cerebro-cloud 1 vez
+
   // Agent keys
   const [agentKeys, setAgentKeys] = useState({ hermes: { configured: false, key: '' } })
   const [hermesKey, setHermesKey] = useState('')
@@ -58,6 +64,8 @@ function App() {
   const [containers, setContainers] = useState(null)
   const [wikiGraph, setWikiGraph] = useState({ nodes: [], edges: [] })
   const [projects, setProjects] = useState([])
+  const [updates, setUpdates] = useState(null)
+  const [version, setVersion] = useState(null)
 
   // Cerebro
   const [cerebroSubtab, setCerebroSubtab] = useState('estructura')
@@ -77,6 +85,32 @@ function App() {
   useEffect(() => { checkConfiguration() }, [])
   useEffect(() => { if (activeTab === 'cerebro') loadCerebroFiles() }, [activeTab])
   useEffect(() => { if (activeTab === 'chat' && isConfigured) loadSessions() }, [activeTab, isConfigured])
+  // ponytail: cargar modo IA cuando el sistema está listo
+  useEffect(() => { if (isConfigured) loadIaMode() }, [isConfigured])
+
+  async function loadIaMode() {
+    try {
+      const d = await (await fetch('/api/ia/mode')).json()
+      setIaMode(d)
+      setIaLocal(d.mode === 'local')
+    } catch {}
+  }
+
+  async function toggleIaLocal() {
+    // ponytail: optimistic toggle + persistir en ia-mode.json (mode=both → toggle real;
+    // mode=local/cloud → el backend ya clampea, persistir el flag para coherencia)
+    const next = !iaLocal
+    setIaLocal(next)
+    try {
+      const d = await (await fetch('/api/ia/mode', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: iaMode?.mode === 'both' ? 'both' : (next ? 'local' : 'cloud') }) })).json()
+      setIaMode(d)
+    } catch {}
+  }
+
+  async function markIaAvisoVisto() {
+    setIaAviso(false)
+    try { await fetch('/api/ia/aviso', { method: 'POST' }) } catch {}
+  }
 
   // === Data loading ===
   async function checkConfiguration() {
@@ -86,7 +120,7 @@ function App() {
       setIsConfigured(data.configured)
       if (data.configured) {
         await startAgent()
-        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects()])
+        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects(), loadUpdates(), loadVersion()])
       }
       setLoading(false)
     } catch { setLoading(false) }
@@ -132,6 +166,14 @@ function App() {
     try { const res = await fetch('/api/projects'); if (res.ok) setProjects((await res.json()).projects || []) } catch {}
   }
 
+  async function loadUpdates() {
+    try { const res = await fetch('/api/updates/check'); if (res.ok) setUpdates(await res.json()) } catch {}
+  }
+
+  async function loadVersion() {
+    try { const d = await (await fetch('/api/version')).json(); setVersion(d.current && d.current !== 'unknown' ? { current: d.current, githubRepo: d.githubRepo } : null) } catch {}
+  }
+
   async function loadCerebroFiles() {
     try {
       const [r, o] = await Promise.all([fetch('/api/vault/raw'), fetch('/api/vault/outputs')])
@@ -156,7 +198,7 @@ function App() {
     try {
       if (await startAgent()) {
         setIsConfigured(true)
-        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects()])
+        await Promise.all([loadData(), loadAgentKeys(), loadAgentConfig(), loadSystemInfo(), loadContainersStatus(), loadWikiGraph(), loadProjects(), loadUpdates(), loadVersion()])
       }
     } finally { setAgentStarting(false) }
   }
@@ -170,8 +212,9 @@ function App() {
       const d = await (await fetch('/api/vault/upload?project=individual', { method: 'POST', body: fd })).json()
       if (d.success || d.path || d.name) {
         const fn = d.name || file.name
-        setChatAttachedFile({ name: fn, path: `raw/chat/${fn}`, preview_type: d.preview_type || 'document', wiki_path: d.wiki_path, size: d.file_size, local_url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null })
-        if (d.wiki_path) { setChatMessages(p => [...p, { role: 'assistant', content: `✅ ${fn} procesado → ${d.wiki_path}` }]); await loadData(); await loadWikiGraph() }
+        setChatAttachedFile({ name: fn, path: `raw/chat/${fn}`, preview_type: d.preview_type || 'document', wiki_path: d.wiki_path, wiki_pending: d.wiki_pending, size: d.file_size, local_url: file.type.startsWith('image/') ? URL.createObjectURL(file) : null })
+        if (d.wiki_pending) { setChatMessages(p => [...p, { role: 'assistant', content: `⏳ **${fn} en cola de procesamiento.** La wiki aparecerá cuando esté lista (mira la pestaña Cerebro en unos segundos).` }]); }
+        else if (d.wiki_path) { setChatMessages(p => [...p, { role: 'assistant', content: `✅ ${fn} procesado → ${d.wiki_path}` }]); await loadData(); await loadWikiGraph() }
       } else { alert('Error: ' + (d.message || 'desconocido')) }
     } catch { alert('Error al subir') } finally { setChatUploading(false) }
   }
@@ -260,14 +303,24 @@ function App() {
       msg = msg ? `${msg}\n\n${note}` : note
     }
     const mode = computeMode()
+    const sendLocal = iaMode?.mode === 'local' || (iaMode?.mode === 'both' && iaLocal)
+    // ponytail: optimistic UI — mensaje aparece inmediatamente, input se limpia antes del fetch
     setChatMessages(p => [...p, { role: 'user', content: msg, attachment: chatAttachedFile }])
+    setChatMessage(''); setChatAttachedFile(null)
     try {
-      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: activeSessionId, mode }) })
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, session_id: activeSessionId, mode, local: sendLocal }) })
       let txt = '', ctx = null
       if (!res.ok) { const e = await res.json().catch(() => ({})); txt = 'Error: ' + (e.detail || e.message || `HTTP ${res.status}`) }
       else { const d = await res.json(); txt = d.response || 'Sin respuesta'; ctx = d.context || null }
       setChatMessages(p => [...p, { role: 'assistant', content: txt, context: ctx, _originalQuery: msg }])
-      setChatMessage(''); setChatAttachedFile(null)
+      // ponytail: aviso informativo 1 vez — 1ª respuesta cerebro-cloud (no error, no timeout)
+      const wentCloudCerebro = mode.startsWith('cerebro') && ctx && !ctx.local && !ctx.error
+      if (wentCloudCerebro) {
+        try {
+          const a = await (await fetch('/api/ia/aviso')).json()
+          if (!a.cerebroAvisoVisto) setIaAviso(true)
+        } catch {}
+      }
       // refrescar lista de sesiones (título auto-actualizado)
       const listRes = await fetch('/api/chat/sessions')
       setSessions((await listRes.json()).sessions || [])
@@ -278,7 +331,8 @@ function App() {
 
   // ponytail: investigar — mensajes seleccionados → investigador → resumen + doc completo
     async function handleInvestigate(selectedMsgs) {
-      const msgs = selectedMsgs.map(idx => chatMessages[idx]).filter(m => m)
+      // ponytail: accept both indices (from selection) and message objects (from Enter key)
+      const msgs = selectedMsgs.map(m => typeof m === 'number' ? chatMessages[m] : m).filter(m => m)
       if (!msgs.length) return
       setChatLoading(true)
       setChatMessages(p => [...p, { role: 'user', content: `🔍 Investigar (${msgs.length} mensajes)` }])
@@ -424,8 +478,8 @@ function App() {
   return (
     <div className="app-shell">
       <VersionBanner />
-      <Header status={status} />
-      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} agentName={editAgentName} />
+      <Header status={status} updates={updates} githubRepo={version?.githubRepo || null} />
+      <Sidebar activeTab={activeTab} onTabChange={setActiveTab} agentName={editAgentName} version={version?.current} />
       <main className="app-main">
         {activeTab === 'dashboard' && <DashboardView vaultInfo={vaultInfo} systemInfo={systemInfo} containers={containers} editAgentName={editAgentName} />}
         {activeTab === 'chat' && (
@@ -443,7 +497,8 @@ function App() {
             cerebroMode={cerebroMode} setCerebroMode={setCerebroMode}
             internetMode={internetMode} setInternetMode={setInternetMode}
             investigationMode={investigationMode} setInvestigationMode={setInvestigationMode}
-            selectedMessages={selectedMessages} setSelectedMessages={setSelectedMessages} />
+            selectedMessages={selectedMessages} setSelectedMessages={setSelectedMessages}
+            iaMode={iaMode} iaLocal={iaLocal} onToggleIaLocal={toggleIaLocal} />
         )}
         {activeTab === 'cerebro' && (
           <CerebroView subtab={cerebroSubtab} setSubtab={setCerebroSubtab} rawFiles={rawFiles} outputFiles={outputFiles}
@@ -452,6 +507,7 @@ function App() {
         )}
         {activeTab === 'graph' && <GrafoView nodes={wikiGraph.nodes || []} edges={wikiGraph.edges || []} refreshKey={wikiGraph} projects={projects} />}
         {activeTab === 'modelos' && <ModelosView />}
+        {activeTab === 'updates' && <ActualizacionesView />}
         {activeTab === 'settings' && (
           <AjustesView editAgentName={editAgentName} editPersonality={editPersonality} editingAgent={editingAgent}
             editSaving={editSaving} editMessage={editMessage} editMessageType={editMessageType} restarting={restarting}
@@ -463,6 +519,28 @@ function App() {
             onExport={() => { setVaultMessage(''); setShowExportPopup(true) }} onImport={handleImportVault} onReset={handleResetConfig} />
         )}
         {showExportPopup && <ExportPopup onClose={() => setShowExportPopup(false)} onExport={handleExportVault} vaultMessage={vaultMessage} vaultMessageType={vaultMessageType} />}
+        {/* ponytail: aviso informativo 1x — cerebro por cloud → recomendar modelo local (privacidad por capas) */}
+        {iaAviso && (
+          <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={markIaAvisoVisto}>
+            <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-primary)', borderRadius: 'var(--radius-lg)', maxWidth: 480, width: '100%', padding: 'var(--space-6)' }} onClick={e => e.stopPropagation()}>
+              <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-3)' }}>
+                <span className="material-symbols-outlined">cloud</span> Modo Cerebro por cloud
+              </h3>
+              <p style={{ lineHeight: 1.6, color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
+                Estás consultando tu <strong>cerebro (documentos privados)</strong> a través de un proveedor cloud.
+                Para máxima privacidad, instala un <strong>modelo local potente</strong> y activa el modo Local:
+                tus documentos nunca salen de tu máquina.
+              </p>
+              <p style={{ fontSize: 13, color: 'var(--color-text-tertiary)', marginBottom: 'var(--space-4)' }}>
+                💼 Para empresas: el modo 100% local mantiene los datos dentro de la organización.
+                Configúralo en <strong>Modelos</strong> (pestaña IA Local).
+              </p>
+              <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
+                <button className="btn-app btn-app-primary" onClick={markIaAvisoVisto}>Entendido</button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
       <MobileNav activeTab={activeTab} onTabChange={setActiveTab} />
     </div>

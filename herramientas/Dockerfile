@@ -16,7 +16,8 @@ RUN pip install --no-cache-dir \
     pytesseract \
     pdfplumber \
     PyPDF2 \
-    Pillow
+    Pillow \
+    markitdown[all]
 
 # ponytail: Graphify desde git@f5a3592 (no en PyPI). Pass 1 tree-sitter + Pass 3 LLM.
 # git necesario para pip install git+...
