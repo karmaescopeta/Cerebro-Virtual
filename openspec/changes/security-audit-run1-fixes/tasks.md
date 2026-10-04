@@ -17,8 +17,8 @@
 ## Verificación (solo este cambio)
 - [x] 11. `py -m py_compile backend/app/main.py` OK; `bash -n` de los 3 scripts OK; sin CRLF.
 - [x] 12. Script ad-hoc de asserts (borrado tras correr): _confine rechaza `../`, _safe_env_kv rechaza newline/`=`, extractall filter=data rechaza members `../`, escape HTML, regex de models/WS — ALL CHECKS PASSED.
-- [ ] 13. Re-verificación con checks de gestor-cerebros-review (servidor en proceso, E2E logtest) — PENDIENTE: requiere rebuild del backend del stack corriendo (ver nota) — y `openspec validate security-audit-run1-fixes`.
-- [ ] 14. `graphify update .` (graph del repo stale tras cambios).
+- [x] 13. Re-verificación con checks de gestor-cerebros-review: py_compile ✓, bash -n ✓, E2E contra el stack rebuilt ✓ (404 vault-static/system, 400 en upload/labels/models/process/save-output). `openspec validate` passed:1.
+- [x] 14. `graphify update .` via contenedor herramientas (`--force`): 2038 nodos, GRAPH_REPORT.md regenerado. Nota: corpus viejo (2681 nodos) era de otra sesión/entorno; el nuevo refleja el escaneo de hoy.
 
 ## Extra (pedido del usuario en esta sesión)
 - [x] Git history: `git filter-repo --invert-paths` sobre `.env`, `vault/system/agent-keys.json` (ambos layouts), `cerebro virtual/sistema-agente/config/agent-config.yaml`, `cerebro virtual/vault/system/agent-config.json`. Verificado con pickaxe + regex estricta de key real: 0 blobs con clave. Backup bundle en `C:\Users\danie\cerebro-history-backup-pre-filter.bundle`.
