@@ -1,33 +1,39 @@
 import React, { useState, useRef, useEffect } from 'react'
 import AddFilesPopup from '../shared/AddFilesPopup'
-import MarkdownViewer from '../shared/MarkdownViewer'
+import DocReader from '../shared/DocReader'
+import { startSaveJob } from '../../mdSave'
 
-function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSearch, selected, setSelected, onDelete, deleting, onReloadRaw, onRefreshGraph, onReloadProjects, projects: parentProjects }) {
+function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSearch, selected, setSelected, onDelete, deleting, onReloadRaw, onRefreshGraph, onReloadProjects, projects: parentProjects, toast, onJobStart, onJobEnd, updatingPaths = [] }) {
   const [showPopup, setShowPopup] = useState(false)
   const [projects, setProjects] = useState([])
-  const [expandedFolders, setExpandedFolders] = useState({})
+  const [expandedFolders, setExpandedFolders] = useState(() => {
+    // ponytail: recordar carpetas abiertas entre recargas; primera visita = todo cerrado
+    try { return JSON.parse(localStorage.getItem('cerebro-folders') || '{}') } catch { return {} }
+  })
   const [previewDoc, setPreviewDoc] = useState(null)
+  const [previewStatus, setPreviewStatus] = useState(null) // fase 3: {in_graph, stale} para el icono de cerebro
   // ponytail: modo edición
   const [editMode, setEditMode] = useState(false)
   const [editNames, setEditNames] = useState({}) // {key: newName}
   const [editProjects, setEditProjects] = useState({}) // {projectId: {name, color}}
   const [editSaving, setEditSaving] = useState(false)
+  // ponytail: cabecera de carpeta solo refleja el click del usuario (no el estado derivado de los archivos)
+  const [folderChecks, setFolderChecks] = useState({})
   // ponytail: modal reasignar
   const [showReassign, setShowReassign] = useState(false)
   const [reassignTarget, setReassignTarget] = useState('individual')
   const [reassigning, setReassigning] = useState(false)
-  // ponytail: modal último archivo
-  const [lastFileModal, setLastFileModal] = useState(null) // {projects: [{id, name}], items: [...]}
+  // ponytail: confirmación de borrado con listado
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [wikiFiles, setWikiFiles] = useState(null)
-
   useEffect(() => { loadProjects() }, [subtab])
   useEffect(() => { if (subtab === 'estructura') loadWikiStems() }, [subtab])
 
   async function loadWikiStems() {
-    // ponytail: stems de wiki/ para marcar "Procesando…" — el grafo ya trae nodos wiki con source_file
+    // ponytail: wiki_pending real — /api/notes lista wiki/<stem>.md (el grafo ya no trae source_file y daba falso "Procesando" eterno)
     try {
-      const d = await (await fetch('/api/wiki/graph')).json()
-      setWikiFiles((d.nodes || []).map(n => (n.source_file || '').split('/').pop()).filter(Boolean))
+      const d = await (await fetch('/api/notes')).json()
+      setWikiFiles((d.notes || []).map(n => n.id))
     } catch { setWikiFiles([]) }
   }
 
@@ -47,7 +53,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
       if (!groups[folder]) groups[folder] = { name: folder, color: '#666', files: [] }
       // ponytail: wiki_pending — raw sin wiki/<stem>.md y no es texto plano = aún procesando (o OCR falló)
       const stem = f.name.replace(/\.[^.]+$/, '')
-      const hasWiki = wikiFiles?.includes(stem + '.md')
+      const hasWiki = wikiFiles?.includes(stem)
       groups[folder].files.push({ ...f, category: 'raw', wiki_pending: !hasWiki && !['txt', 'md'].includes(f.ext) })
     })
     outputFiles.forEach(f => {
@@ -75,7 +81,11 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
     return p || { id: folderId, name: folderId, color: '#666' }
   }
 
-  const toggleFolder = (folder) => setExpandedFolders(prev => ({ ...prev, [folder]: !prev[folder] }))
+  const toggleFolder = (folder) => setExpandedFolders(prev => {
+    const next = { ...prev, [folder]: !prev[folder] }
+    try { localStorage.setItem('cerebro-folders', JSON.stringify(next)) } catch {}
+    return next
+  })
 
   async function handleDeleteProject(projectId) {
     if (!confirm(`¿Borrar proyecto "${projectMeta(projectId).name}" y todos sus archivos?`)) return
@@ -83,13 +93,15 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
   }
 
   async function handlePreview(f, category) {
-    const ext = f.ext?.toLowerCase() || ''
+      const ext = f.ext?.toLowerCase() || ''
     if (ext === 'md') {
-      try {
-        const res = await fetch(`/vault-static/${category}/${f.path}`)
-        const content = await res.text()
-        setPreviewDoc({ content, name: f.name, ext })
-      } catch {}
+          try {
+            const res = await fetch(`/vault-static/${category}/${f.path}`)
+            const content = await res.text()
+            setPreviewDoc({ content, name: f.name, ext, path: f.path, cat: category })
+            setPreviewStatus(null)
+            fetch(`/api/vault/file-status?path=${category}/${f.path}`).then(r => r.json()).then(setPreviewStatus).catch(() => {})
+          } catch {}
     } else {
       window.open(`/vault-static/${category}/${f.path}`, '_blank')
     }
@@ -103,82 +115,64 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
     onRefreshGraph?.()
   }
 
-  const structSelectedCount = Object.entries(selected).filter(([k, v]) => v && k.startsWith('estructura|')).length
+  // ponytail: listado de archivos seleccionados (modales Eliminar/Reasignar)
+  const selectedFiles = Object.entries(selected).filter(([k, v]) => v && k.startsWith('estructura|') && !k.startsWith('estructura|project|')).map(([k]) => {
+    const parts = k.split('|')
+    const category = parts[1]
+    const path = parts.slice(2).join('|')
+    const f = (category === 'raw' ? rawFiles : outputFiles).find(x => x.path === path)
+    return { category, path, name: f?.name || path }
+  })
+  const structSelectedCount = selectedFiles.length
+  // ponytail: proyectos vacíos marcados con el checkbox de carpeta (keys estructura|project|<id>)
+  const selProjects = Object.entries(selected).filter(([k, v]) => v && k.startsWith('estructura|project|')).map(([k]) => k.split('|')[2])
+  const selTotal = structSelectedCount + selProjects.length
+  const selectedGroups = Object.values(selectedFiles.reduce((acc, f) => {
+    const key = f.path.includes('/') ? f.path.split('/')[0] : 'individual'
+    ;(acc[key] = acc[key] || { id: key, files: [] }).files.push(f)
+    return acc
+  }, {})).map(g => {
+    const info = structure[g.id]
+    return { ...g, name: info?.name || g.id, color: info?.color || '#666' }
+  })
+  // ponytail: listado agrupado por carpeta — archivos sueltos caen en "Individual" (avisa de su carpeta)
+  const selectedList = selectedFiles.length > 0 && (
+    <div style={{ maxHeight: 220, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 'var(--space-2)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+      {selectedGroups.map(g => (
+        <div key={g.id}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+            <span style={{ width: 10, height: 10, borderRadius: 'var(--radius-full)', background: g.color, flexShrink: 0 }} />
+            <span style={{ fontWeight: 600, fontSize: 12, color: 'var(--color-text-primary)' }}>{g.name}</span>
+            <span className="label-caps" style={{ color: 'var(--color-text-tertiary)' }}>({g.files.length})</span>
+          </div>
+          {g.files.map(f => (
+            <div key={f.path} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 13, minWidth: 0, paddingLeft: 14 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--color-text-tertiary)' }}>{f.category === 'raw' ? 'inventory_2' : 'upload'}</span>
+              <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--color-text-primary)' }}>{f.name}</span>
+              <span className="label-caps" style={{ color: f.category === 'raw' ? 'var(--color-primary)' : 'var(--color-success)' }}>{f.category}</span>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  )
 
-  // ponytail: detectar últimos archivos por proyecto antes de eliminar
-  function checkLastFiles(items) {
-    // agrupar items por project_id
-    const byProject = {}
-    items.forEach(item => {
-      const parts = item.path.split('/')
-      if (parts.length > 1) {
-        const pid = parts[0]
-        if (!byProject[pid]) byProject[pid] = []
-        byProject[pid].push(item)
-      }
-    })
-    // para cada proyecto, verificar si todos sus archivos están siendo eliminados
-    const lastProjects = []
-    Object.entries(byProject).forEach(([pid, projItems]) => {
-      const projInfo = projects.find(p => p.id === pid)
-      if (!projInfo) return // individual o desconocido
-      // contar archivos totales del proyecto en estructura
-      const allFiles = (structure[pid]?.files || [])
-      if (allFiles.length === projItems.length && projItems.length > 0) {
-        lastProjects.push({ id: pid, name: projInfo.name })
-      }
-    })
-    return lastProjects
-  }
-
-  // ponytail: override onDelete para detectar último archivo
-  async function handleSmartDelete() {
-    const items = Object.entries(selected).filter(([, v]) => v).map(([k]) => {
-      const parts = k.split('|')
-      const category = parts[0] === 'estructura' ? parts[1] : parts[0]
-      const path = parts[0] === 'estructura' ? parts.slice(2).join('|') : parts.slice(1).join('|')
-      return { category, path }
-    })
-    if (!items.length) return
-
-    const lastProjects = checkLastFiles(items)
-    if (lastProjects.length > 0) {
-      setLastFileModal({ projects: lastProjects, items })
-      return
-    }
-    onDelete()
-  }
-
-  // ponytail: eliminar todo (proyectos + archivos)
-  async function handleDeleteAll() {
-    const { projects: lastProjs, items } = lastFileModal
-    setDeletingAll(true)
+  // ponytail: borrado directo — archivos via batch-delete + proyectos vacíos marcados; sin modal "último archivo"
+  const [deletingSel, setDeletingSel] = useState(false)
+  async function handleConfirmDelete() {
+    setDeletingSel(true)
     try {
-      // borrar proyectos completos
-      for (const p of lastProjs) {
-        await fetch(`/api/projects/${p.id}`, { method: 'DELETE' })
+      const projectIds = selProjects
+      for (const pid of projectIds) {
+        await fetch(`/api/projects/${pid}`, { method: 'DELETE' })
       }
-      // borrar archivos restantes que no pertenecen a proyectos eliminados
-      const remaining = items.filter(item => {
-        const parts = item.path.split('/')
-        const pid = parts.length > 1 ? parts[0] : null
-        return !lastProjs.some(p => p.id === pid)
-      })
-      if (remaining.length) {
-        await fetch('/api/vault/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(remaining) })
+      if (selectedFiles.length) {
+        await fetch('/api/vault/batch-delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selectedFiles.map(f => ({ category: f.category, path: f.path }))) })
       }
       setSelected({})
       await loadProjects()
-      onReloadProjects?.()
-      onReloadRaw?.()
-      onRefreshGraph?.()
-    } catch {} finally { setDeletingAll(false); setLastFileModal(null) }
-  }
-
-  // ponytail: conservar proyecto, solo borrar archivos
-  async function handleKeepProject() {
-    setLastFileModal(null)
-    onDelete()
+      onReloadProjects?.(); onReloadRaw?.(); onRefreshGraph?.()
+    } catch {} finally { setDeletingSel(false); setDeleteConfirm(false) }
   }
 
   // ponytail: guardar edición
@@ -231,7 +225,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
   async function handleReassign() {
     setReassigning(true)
     try {
-      const items = Object.entries(selected).filter(([, v]) => v).map(([k]) => {
+      const items = Object.entries(selected).filter(([k, v]) => v && !k.startsWith('estructura|project|')).map(([k]) => {
         const parts = k.split('|')
         const category = parts[0] === 'estructura' ? parts[1] : parts[0]
         const path = parts[0] === 'estructura' ? parts.slice(2).join('|') : parts.slice(1).join('|')
@@ -258,48 +252,44 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 'var(--space-2)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-          <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)', fontSize: 28 }}>science</span>
-          <h1 className="section-title" style={{ marginBottom: 0 }}>Cerebro</h1>
+      {/* ponytail: toolbar única — tabs a la izquierda, acciones a la derecha, misma línea */}
+      <div className="cerebro-toolbar">
+        <div className="cerebro-toolbar-tabs">
+          <TabButton active={subtab === 'estructura'} onClick={() => setSubtab('estructura')} icon="account_tree" label="Estructura" />
+          <TabButton active={subtab === 'raw'} onClick={() => setSubtab('raw')} icon="inventory_2" label="Raw" count={rawFlat.length} />
+          <TabButton active={subtab === 'outputs'} onClick={() => setSubtab('outputs')} icon="upload" label="Outputs" count={outputFiles.length} />
         </div>
-        {(subtab === 'estructura' || subtab === 'raw') && (
-          <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-            {subtab === 'estructura' && (
-              <>
-                {editMode ? (
-                  <button className="btn-app btn-app-primary" onClick={handleSaveEdit} disabled={editSaving}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>save</span>
-                    {editSaving ? 'Guardando...' : 'Guardar'}
-                  </button>
-                ) : (
-                  <button className="btn-app btn-app-secondary" onClick={() => { setEditMode(true); setEditNames({}); setEditProjects({}) }}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>edit</span>
-                    Editar
-                  </button>
-                )}
-                {structSelectedCount > 0 && !editMode && (
-                  <button className="btn-app btn-app-secondary" onClick={() => setShowReassign(true)}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>swap_horiz</span>
-                    Reasignar ({structSelectedCount})
-                  </button>
-                )}
-              </>
+        {subtab === 'estructura' && (
+          <div className="cerebro-toolbar-actions">
+            {editMode && structSelectedCount > 0 && (
+              <button className="btn-app btn-app-secondary" onClick={() => setShowReassign(true)}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>swap_horiz</span>
+                <span className="cbtn-label">Reasignar ({structSelectedCount})</span>
+              </button>
+            )}
+            {editMode && selTotal > 0 && (
+              <button className="btn-app btn-app-danger" onClick={() => setDeleteConfirm(true)}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
+                <span className="cbtn-label">Eliminar ({selTotal})</span>
+              </button>
+            )}
+            {editMode ? (
+              <button className="btn-app btn-app-primary" onClick={handleSaveEdit} disabled={editSaving}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>save</span>
+                <span className="cbtn-label">{editSaving ? 'Guardando...' : 'Guardar'}</span>
+              </button>
+            ) : (
+              <button className="btn-app btn-app-secondary" onClick={() => { setEditMode(true); setEditNames({}); setEditProjects({}); setFolderChecks({}) }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>edit</span>
+                <span className="cbtn-label">Editar</span>
+              </button>
             )}
             <button className="btn-app btn-app-primary" onClick={() => setShowPopup(true)}>
               <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
-              Añadir archivos
+              <span className="cbtn-label">Añadir archivos</span>
             </button>
           </div>
         )}
-      </div>
-      <p className="section-subtitle">Estructura organiza archivos por proyecto. Raw y Outputs muestran archivos planos.</p>
-
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: 'var(--space-4)', marginBottom: 'var(--space-6)', flexWrap: 'wrap' }}>
-        <TabButton active={subtab === 'estructura'} onClick={() => setSubtab('estructura')} icon="account_tree" label="Estructura" />
-        <TabButton active={subtab === 'raw'} onClick={() => setSubtab('raw')} icon="inventory_2" label="Raw" count={rawFlat.length} />
-        <TabButton active={subtab === 'outputs'} onClick={() => setSubtab('outputs')} icon="upload" label="Outputs" count={outputFiles.length} />
       </div>
 
       {/* Search */}
@@ -308,29 +298,51 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
         <input className="input-app" style={{ paddingLeft: 40 }} placeholder="Buscar archivo..." value={search} onChange={(e) => setSearch(e.target.value)} />
       </div>
 
-      {/* Actions bar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
-        <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>{subtab === 'estructura' ? structSelectedCount : selectedCount} seleccionado(s)</span>
-        {!editMode && (
-          <button className="btn-app btn-app-danger" onClick={subtab === 'estructura' ? handleSmartDelete : onDelete} disabled={!(subtab === 'estructura' ? structSelectedCount : selectedCount) || deleting} style={{ opacity: (!(subtab === 'estructura' ? structSelectedCount : selectedCount) || deleting) ? 0.5 : 1 }}>
+      {/* ponytail: actions bar solo en Raw/Outputs — en Estructura el borrado vive en Editar (botón Eliminar, fuera la papelera) */}
+      {subtab !== 'estructura' && (
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-4)' }}>
+          <span style={{ fontSize: 14, color: 'var(--color-text-secondary)' }}>{selectedCount} seleccionado(s)</span>
+          <button className="btn-app btn-app-danger" onClick={onDelete} disabled={!selectedCount || deleting} style={{ opacity: (!selectedCount || deleting) ? 0.5 : 1 }}>
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
-            Eliminar ({subtab === 'estructura' ? structSelectedCount : selectedCount})
+            Eliminar ({selectedCount})
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* File list */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-2)' }}>
         {subtab === 'estructura' ? (
           Object.entries(structure).map(([folder, info]) => {
-            if (info.files.length === 0 && folder !== 'individual') return null
-            const isExpanded = expandedFolders[folder] ?? true
+            // ponytail: proyectos vacíos visibles (se pueden ver y borrar); cerradas por defecto, búsqueda auto-expande
+            const isExpanded = search ? true : (expandedFolders[folder] ?? false)
             const filteredFiles = search ? info.files.filter(f => f.name.toLowerCase().includes(search.toLowerCase())) : info.files
             if (!filteredFiles.length && search) return null
+            const pending = info.files.filter(f => f.wiki_pending).length
             return (
               <div key={folder}>
-                <div className="card card-hover" style={{ padding: 'var(--space-3) var(--space-4)', display: 'flex', alignItems: 'center', gap: 'var(--space-3)', cursor: 'pointer' }}
+                <div className="card card-hover cerebro-folder-row" style={{ padding: 'var(--space-3) var(--space-4)', display: 'flex', alignItems: 'center', gap: 'var(--space-3)', cursor: 'pointer' }}
                   onClick={() => toggleFolder(folder)}>
+                  {/* ponytail: selección de carpeta solo en modo Editar — la vacía selecciona el PROYECTO (key estructura|project|<id>) */}
+                  {editMode && (info.files.length > 0 ? (
+                    <input type="checkbox" title="Seleccionar carpeta"
+                                          checked={!!folderChecks[folder]}
+                                          onChange={(e) => {
+                                            setFolderChecks(prev => ({ ...prev, [folder]: e.target.checked }))
+                                            setSelected(prev => {
+                                              const next = { ...prev }
+                                              filteredFiles.forEach(f => { next[`estructura|${f.category}|${f.path}`] = e.target.checked })
+                                              return next
+                                            })
+                                          }}
+                      onClick={e => e.stopPropagation()}
+                      style={{ width: 18, height: 18, accentColor: 'var(--color-primary)', cursor: 'pointer', flexShrink: 0 }} />
+                  ) : projects.find(p => p.id === folder) ? (
+                    <input type="checkbox" title="Seleccionar proyecto vacío"
+                      checked={!!selected[`estructura|project|${folder}`]}
+                      onChange={(e) => setSelected(prev => ({ ...prev, [`estructura|project|${folder}`]: e.target.checked }))}
+                      onClick={e => e.stopPropagation()}
+                      style={{ width: 18, height: 18, accentColor: 'var(--color-primary)', cursor: 'pointer', flexShrink: 0 }} />
+                  ) : null)}
                   <div style={{ width: 12, height: 12, borderRadius: 'var(--radius-full)', background: editProjects[folder]?.color || info.color, boxShadow: `0 0 6px ${editProjects[folder]?.color || info.color}`, flexShrink: 0 }} />
                   <span className="material-symbols-outlined" style={{ fontSize: 22, color: editProjects[folder]?.color || info.color }}>{isExpanded ? 'folder_open' : 'folder'}</span>
                   {editMode && projects.find(p => p.id === folder) ? (
@@ -339,7 +351,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                         value={editProjects[folder]?.name ?? info.name}
                         onChange={(e) => setEditProjects(prev => ({ ...prev, [folder]: { ...prev[folder], name: e.target.value } }))}
                         onClick={e => e.stopPropagation()}
-                        style={{ fontWeight: 600, fontSize: 15, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 'var(--radius-sm)', padding: '2px 6px', color: 'var(--color-text-primary)', minWidth: 100 }}
+                        style={{ fontWeight: 600, fontSize: 15, background: 'color-mix(in srgb, var(--color-text-primary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-text-primary) 20%, transparent)', borderRadius: 'var(--radius-sm)', padding: '2px 6px', color: 'var(--color-text-primary)', minWidth: 100 }}
                       />
                       <input
                         type="color"
@@ -352,23 +364,25 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                   ) : (
                     <span style={{ fontWeight: 600, fontSize: 15 }}>{info.name}</span>
                   )}
+                  {info.files.length === 0 && <span className="label-caps" style={{ color: 'var(--color-text-tertiary)', opacity: 0.7 }}>vacío</span>}
                   <span className="label-caps" style={{ color: 'var(--color-text-tertiary)' }}>({info.files.length})</span>
-                  <div style={{ flex: 1 }} />
-                  {projects.find(p => p.id === folder) && !editMode && (
-                    <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(folder) }}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)' }}
-                      title="Borrar proyecto">
-                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
-                    </button>
+                  {pending > 0 && (
+                    <span title="Archivos procesando a wiki" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 11, color: 'var(--color-text-tertiary)', flexShrink: 0 }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 13, animation: 'spin 2s linear infinite', display: 'inline-block' }}>progress_activity</span>
+                      {pending}
+                    </span>
                   )}
+                  <div style={{ flex: 1 }} />
+                  {/* ponytail: proyectos vacíos se borran con su checkbox + Eliminar (la papelera fija en vacíos era redundante y molesta) */}
                   <span className="material-symbols-outlined" style={{ color: 'var(--color-text-tertiary)', fontSize: 18, transition: 'transform 0.2s', transform: isExpanded ? 'rotate(90deg)' : 'none' }}>chevron_right</span>
                 </div>
                 {isExpanded && filteredFiles.map(f => {
                   const key = `estructura|${f.category}|${f.path}`
                   const editKey = `${f.category}|${f.path}`
                   return (
-                    <div key={key} className="card" style={{ padding: 'var(--space-3) var(--space-4)', display: 'flex', alignItems: 'center', gap: 'var(--space-4)', marginLeft: 'var(--space-6)', borderLeft: `3px solid ${editProjects[folder]?.color || info.color}` }}>
-                      {!editMode && (
+                    <div key={key} className="card cerebro-file-row" style={{ padding: 'var(--space-3) var(--space-4)', display: 'flex', alignItems: 'center', gap: 'var(--space-4)', marginLeft: 'var(--space-6)', borderLeft: `3px solid ${editProjects[folder]?.color || info.color}` }}>
+                      {/* ponytail: selección de archivos solo en modo Editar */}
+                      {editMode && (
                         <input type="checkbox" checked={!!selected[key]} onChange={(e) => setSelected(prev => ({ ...prev, [key]: e.target.checked }))}
                           style={{ width: 18, height: 18, accentColor: 'var(--color-primary)', cursor: 'pointer' }} />
                       )}
@@ -379,11 +393,11 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                           <input
                             value={editNames[editKey] ?? f.name.replace(/\.[^.]+$/, '')}
                             onChange={(e) => setEditNames(prev => ({ ...prev, [editKey]: e.target.value }))}
-                            style={{ fontWeight: 500, fontSize: 14, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.2)', borderRadius: 'var(--radius-sm)', padding: '2px 6px', color: 'var(--color-text-primary)', width: '100%', maxWidth: 300 }}
+                            style={{ fontWeight: 500, fontSize: 14, background: 'color-mix(in srgb, var(--color-text-primary) 5%, transparent)', border: '1px solid color-mix(in srgb, var(--color-text-primary) 20%, transparent)', borderRadius: 'var(--radius-sm)', padding: '2px 6px', color: 'var(--color-text-primary)', width: '100%', maxWidth: 300 }}
                           />
                         ) : (
                           <>
-                            <div style={{ fontWeight: 500, fontSize: 14 }}>
+                            <div className="cerebro-file-name" style={{ fontWeight: 500, fontSize: 14 }}>
                               {f.name}
                               {f.category === 'raw' && f.wiki_pending && (
                                 <span title="Procesando a wiki en segundo plano" style={{ marginLeft: 6, fontSize: 11, color: 'var(--color-text-tertiary)', display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -392,10 +406,10 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                                 </span>
                               )}
                             </div>
-                            <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginTop: 2 }}>
+                            <div className="cerebro-file-meta" style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginTop: 2 }}>
                               <span className="label-caps" style={{ color: f.category === 'raw' ? 'var(--color-primary)' : 'var(--color-success)' }}>{f.category}</span>
                               <span style={{ color: 'var(--color-text-tertiary)' }}>•</span>
-                              <span className="label-caps">{f.path}</span>
+                              <span className="label-caps cerebro-file-path">{f.path}</span>
                               <span style={{ color: 'var(--color-text-tertiary)' }}>•</span>
                               <span className="label-caps">{(f.size / 1024).toFixed(1)} KB</span>
                             </div>
@@ -404,10 +418,18 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                       </div>
                       {!editMode && (
                         <>
-                          <button onClick={() => handlePreview(f, f.category)} title="Visualizar"
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0 }}>
-                            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>visibility</span>
-                          </button>
+                          {/* fase investigador: archivo con guardado en curso → candado en vez de Visualizar */}
+                          {updatingPaths.includes(`${f.category}/${f.path}`) ? (
+                            <span title="Actualizando contenido — espera a que termine para modificarlo"
+                              style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-tertiary)', fontSize: 11.5, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                              <span className="material-symbols-outlined research-spin" style={{ fontSize: 18 }}>progress_activity</span>Actualizando
+                            </span>
+                          ) : (
+                            <button onClick={() => handlePreview(f, f.category)} title="Visualizar"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0 }}>
+                              <span className="material-symbols-outlined" style={{ fontSize: 20 }}>visibility</span>
+                            </button>
+                          )}
                           <a href={`/vault-static/${f.category}/${f.path}`} download={f.name} title="Descargar"
                             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0, display: 'flex', alignItems: 'center' }}>
                             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>download</span>
@@ -435,16 +457,24 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
                 <span className="material-symbols-outlined" style={{ color: 'var(--color-text-tertiary)' }}>{fileIcon(f.ext)}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontWeight: 500, fontSize: 14 }}>{f.name}</div>
-                  <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginTop: 2 }}>
-                    <span className="label-caps">{f.path}</span>
+                  <div className="cerebro-file-meta" style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', marginTop: 2 }}>
+                    <span className="label-caps cerebro-file-path">{f.path}</span>
                     <span style={{ color: 'var(--color-text-tertiary)' }}>•</span>
                     <span className="label-caps">{(f.size / 1024).toFixed(1)} KB</span>
                   </div>
                 </div>
-                <button onClick={() => handlePreview(f, subtab)} title="Visualizar"
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0 }}>
-                  <span className="material-symbols-outlined" style={{ fontSize: 20 }}>visibility</span>
-                </button>
+                {/* fase investigador: archivo con guardado en curso → candado en vez de Visualizar */}
+                {updatingPaths.includes(`${subtab}/${f.path}`) ? (
+                  <span title="Actualizando contenido — espera a que termine para modificarlo"
+                    style={{ display: 'flex', alignItems: 'center', gap: 4, color: 'var(--color-text-tertiary)', fontSize: 11.5, flexShrink: 0, whiteSpace: 'nowrap' }}>
+                    <span className="material-symbols-outlined research-spin" style={{ fontSize: 18 }}>progress_activity</span>Actualizando
+                  </span>
+                ) : (
+                  <button onClick={() => handlePreview(f, subtab)} title="Visualizar"
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0 }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 20 }}>visibility</span>
+                  </button>
+                )}
                 <a href={`/vault-static/${subtab}/${f.path}`} download={f.name} title="Descargar"
                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-1)', flexShrink: 0, display: 'flex', alignItems: 'center' }}>
                   <span className="material-symbols-outlined" style={{ fontSize: 20 }}>download</span>
@@ -455,50 +485,52 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
         )}
       </div>
 
-      {showPopup && <AddFilesPopup onClose={handleClosePopup} projects={projects} onReloadProjects={loadProjects} />}
+      {showPopup && <AddFilesPopup onClose={handleClosePopup} projects={projects} onReloadProjects={loadProjects} toast={toast} onJobStart={onJobStart} onJobEnd={onJobEnd} />}
 
-      {/* ponytail: modal visualizador .md */}
-      {previewDoc && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={() => setPreviewDoc(null)}>
-          <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-lg)', maxWidth: 700, maxHeight: '80vh', width: '100%', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-4) var(--space-5)', borderBottom: '1px solid var(--color-surface-high)' }}>
-              <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>description</span>{previewDoc.name}
-              </h3>
-              <button onClick={() => setPreviewDoc(null)} className="btn-app btn-app-secondary" style={{ width: 32, height: 32, padding: 0 }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>close</span>
-              </button>
-            </div>
-            <div style={{ overflowY: 'auto', padding: 'var(--space-5)', flex: 1 }}>
-              <MarkdownViewer content={previewDoc.content} />
-            </div>
-          </div>
-        </div>
-      )}
+      {/* ponytail: modal visualizador .md → DocReader; fase 3: editor rich + pipeline formato Graphify + icono cerebro */}
+                        {previewDoc && (
+                                                  <DocReader title={previewDoc.name} content={previewDoc.content} onClose={() => setPreviewDoc(null)}
+                            status={previewStatus}
+                            onSaveEdit={(md) => {
+                        // fase investigador: job en background — el archivo queda "Actualizando" en la lista hasta terminar
+                        startSaveJob({ path: `${previewDoc.cat}/${previewDoc.path}`, oldContent: previewDoc.content, newContent: md }).catch(e => toast?.({ type: 'error', text: String(e.message || e) }))
+                        setPreviewDoc(null)
+                      }}
+                            actions={[
+                              <a key="dl" className="chat-action-btn" href={`/vault-static/${previewDoc.cat}/${previewDoc.path}`} download={previewDoc.name}>
+                                <span className="material-symbols-outlined">download</span>Descargar
+                              </a>,
+                            ]} />
+                        )}
 
-      {/* ponytail: modal último archivo */}
-      {lastFileModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={() => setLastFileModal(null)}>
+      {/* ponytail: confirmación de eliminado con listado (reemplaza al pop nativo) */}
+      {deleteConfirm && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={() => setDeleteConfirm(false)}>
           <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-lg)', maxWidth: 480, width: '100%', padding: 'var(--space-6)' }} onClick={e => e.stopPropagation()}>
-            <span className="material-symbols-outlined" style={{ fontSize: 48, color: 'var(--color-warning)', display: 'block', textAlign: 'center', marginBottom: 'var(--space-3)' }}>warning</span>
-            <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-text-primary)', textAlign: 'center', marginBottom: 'var(--space-3)' }}>Último archivo del proyecto</h3>
-            <p style={{ color: 'var(--color-text-secondary)', textAlign: 'center', marginBottom: 'var(--space-2)' }}>
-              Este es el último archivo de: <strong>{lastFileModal.projects.map(p => p.name).join(', ')}</strong>
+            <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-error)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 22 }}>delete_forever</span>
+              {[selectedFiles.length > 0 && `Eliminar ${selectedFiles.length} archivo(s)`, selProjects.length > 0 && `Eliminar ${selProjects.length} proyecto(s)`].filter(Boolean).join(' y ')}
+            </h3>
+            <p style={{ fontSize: 14, color: 'var(--color-text-secondary)', marginBottom: 'var(--space-3)' }}>
+              Se borrarán <strong>definitivamente</strong> del vault:
             </p>
-            <p style={{ color: 'var(--color-text-tertiary)', textAlign: 'center', fontSize: 14, marginBottom: 'var(--space-5)' }}>
-              ¿Eliminar también el proyecto o conservarlo vacío?
-            </p>
-            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'center' }}>
-              <button className="btn-app btn-app-danger" onClick={handleDeleteAll} disabled={deletingAll}>
+            {selectedList}
+            {selProjects.length > 0 && (
+              <div style={{ border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', padding: 'var(--space-2)', marginBottom: 'var(--space-4)' }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: 4 }}>Proyectos vacíos:</div>
+                {selProjects.map(pid => (
+                  <div key={pid} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: 'var(--color-text-primary)' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 'var(--radius-full)', background: projectMeta(pid).color, flexShrink: 0 }} />
+                    {projectMeta(pid).name}
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
+              <button className="btn-app btn-app-secondary" onClick={() => setDeleteConfirm(false)}>Cancelar</button>
+              <button className="btn-app btn-app-danger" onClick={handleConfirmDelete} disabled={deletingSel}>
                 <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete_forever</span>
-                {deletingAll ? 'Eliminando...' : 'Eliminar todo'}
-              </button>
-              <button className="btn-app btn-app-secondary" onClick={handleKeepProject}>
-                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>keep</span>
-                Conservar proyecto
-              </button>
-              <button className="btn-app btn-app-secondary" onClick={() => setLastFileModal(null)} style={{ width: 32, height: 32, padding: 0 }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>close</span>
+                {deletingSel ? 'Eliminando...' : 'Eliminar'}
               </button>
             </div>
           </div>
@@ -513,6 +545,7 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
               <span className="material-symbols-outlined" style={{ fontSize: 22 }}>swap_horiz</span>
               Reasignar {structSelectedCount} archivo(s)
             </h3>
+            {selectedList}
             <label style={{ fontSize: 14, color: 'var(--color-text-secondary)', display: 'block', marginBottom: 'var(--space-2)' }}>Proyecto destino:</label>
             <select className="input-app" value={reassignTarget} onChange={(e) => setReassignTarget(e.target.value)} style={{ width: '100%', marginBottom: 'var(--space-4)' }}>
               <option value="individual">Individual</option>
@@ -533,16 +566,10 @@ function CerebroView({ subtab, setSubtab, rawFiles, outputFiles, search, setSear
 
 function TabButton({ active, onClick, icon, label, count }) {
   return (
-    <button onClick={onClick} style={{
-      display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 'var(--space-2)',
-      padding: 'var(--space-3) var(--space-4)', minWidth: 120, borderRadius: 'var(--radius-md)', cursor: 'pointer',
-      background: active ? 'rgba(173,198,255,0.1)' : 'rgba(255,255,255,0.03)',
-      border: active ? '1px solid rgba(173,198,255,0.2)' : '1px solid rgba(255,255,255,0.1)',
-      transition: 'all var(--transition-fast)',
-    }}>
-      <span className="material-symbols-outlined" style={{ fontSize: 24, color: active ? 'var(--color-primary)' : 'var(--color-text-tertiary)' }}>{icon}</span>
-      <span style={{ fontSize: 16, fontWeight: 500, color: active ? 'var(--color-primary)' : 'var(--color-text-tertiary)' }}>{label}</span>
-      {count !== undefined && <span className="label-caps" style={{ color: active ? 'var(--color-primary)' : 'var(--color-text-tertiary)', opacity: 0.7 }}>({count})</span>}
+    <button className={`cerebro-tab${active ? ' active' : ''}`} onClick={onClick}>
+      <span className="material-symbols-outlined">{icon}</span>
+      <span className="cerebro-tab-label">{label}</span>
+      {count !== undefined && <span className="label-caps cerebro-tab-count">({count})</span>}
     </button>
   )
 }

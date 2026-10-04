@@ -1,1 +1,0 @@
-Este es un documento de prueba sobre inteligencia artificial y aprendizaje automático. Contiene conceptos como redes neuronales, deep learning, y transformers.

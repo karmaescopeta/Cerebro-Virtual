@@ -1,9 +1,9 @@
 import React, { useState, useRef } from 'react'
 
 // ponytail: popup compartido — elegir destino → seleccionar archivos → confirmar → subir
-function AddFilesPopup({ onClose, projects, onReloadProjects }) {
+function AddFilesPopup({ onClose, projects, onReloadProjects, toast, onJobStart, onJobEnd }) {
   const [step, setStep] = useState('choose') // choose | individual | project-choose | project-new | project-existing | pending | uploading | done
-  const [newProject, setNewProject] = useState({ name: '', description: '', color: '#4edea3' })
+  const [newProject, setNewProject] = useState({ name: '', description: '', color: '#6FCF97' })
   const [selectedProject, setSelectedProject] = useState('')
   const [uploadStatus, setUploadStatus] = useState('')
   const [pendingFiles, setPendingFiles] = useState([])
@@ -25,21 +25,26 @@ function AddFilesPopup({ onClose, projects, onReloadProjects }) {
   }
 
   // ponytail: subir solo cuando el usuario confirma
-  async function confirmUpload() {
-    setStep('uploading')
-    let ok = 0, fail = 0
-    for (const file of pendingFiles) {
-      try {
-        const fd = new FormData(); fd.append('file', file)
-        const d = await (await fetch(`/api/vault/upload?project=${pendingProject}`, { method: 'POST', body: fd })).json()
-        if (d.success || d.path) ok++
-        else fail++
-      } catch { fail++ }
+    async function confirmUpload() {
+      // fase 2 visor-md: fire-and-forget — cerrar ya, subir por detrás, recargar + toast al terminar
+      const files = pendingFiles
+      const project = pendingProject
+      onClose()
+      onJobStart?.()
+      toast?.({ type: 'info', text: `Subiendo ${files.length} archivo(s)…` })
+      let ok = 0, fail = 0
+      for (const file of files) {
+        try {
+          const fd = new FormData(); fd.append('file', file)
+          const d = await (await fetch(`/api/vault/upload?project=${project}`, { method: 'POST', body: fd })).json()
+          if (d.success || d.path) ok++
+          else fail++
+        } catch { fail++ }
+      }
+      onJobEnd?.()
+      toast?.({ type: fail ? 'error' : 'success', text: fail ? `${ok} archivo(s) subido(s), ${fail} fallido(s)` : `${ok} archivo(s) procesados e integrados en el cerebro` })
+      onClose() // recarga raw/graph/projects al terminar
     }
-    setUploadResults({ ok, fail })
-    setUploadStatus(`✅ ${ok} subido(s)${fail ? `, ❌ ${fail} fallido(s)` : ''}`)
-    setStep('done')
-  }
 
   async function createProjectAndUpload(fileList) {
     // ponytail: Array.from — FileList no tiene .map, crashea el render

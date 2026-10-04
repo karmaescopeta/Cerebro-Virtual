@@ -48,7 +48,7 @@ function ExportPopup({ onClose, onExport, vaultMessage, vaultMessageType }) {
           {vaultMessage && (
             <div style={{
               padding: 'var(--space-3)', borderRadius: 'var(--radius-sm)',
-              background: vaultMessageType === 'success' ? 'rgba(78,222,163,0.1)' : vaultMessageType === 'error' ? 'rgba(255,180,171,0.1)' : 'rgba(173,198,255,0.1)',
+              background: vaultMessageType === 'success' ? 'color-mix(in srgb, var(--color-success) 10%, transparent)' : vaultMessageType === 'error' ? 'color-mix(in srgb, var(--color-error) 10%, transparent)' : 'color-mix(in srgb, var(--color-primary) 10%, transparent)',
               color: vaultMessageType === 'success' ? 'var(--color-success)' : vaultMessageType === 'error' ? 'var(--color-error)' : 'var(--color-primary)',
               fontSize: 14,
             }}>

@@ -1,8 +1,5 @@
 model: deepseek/deepseek-v4-flash
 temperature: 0.4
-skills:
-  - web
-  - file
-  - terminal
+skills: []  # ponytail: sin tools — el prompt YA lleva los resultados SearXNG; el web_search firecrawl del agente causaba turnos infinitos + timeouts
 terminal:
   cwd: /app/vault

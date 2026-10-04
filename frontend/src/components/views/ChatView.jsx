@@ -1,14 +1,31 @@
 import React, { useRef, useState, useEffect } from 'react'
 import AddFilesPopup from '../shared/AddFilesPopup'
 import MarkdownViewer from '../shared/MarkdownViewer'
+import DocReader from '../shared/DocReader'
+import { startSaveJob } from '../../mdSave'
+import ResearchPanel from '../shared/ResearchPanel'
 
 function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatUploading, chatAttachedFile, chatDragOver,
   setChatMessage, setChatAttachedFile, onSend, onUploadFile, onDragOver, onDragLeave, onDrop, fileInputRef, onRefreshGraph, projects, onReloadProjects,
-  onInvestigate, onSaveOutput,
+  onInvestigate, onSaveOutput, brainUpdating,
   activeSessionId, sessions, onNewSession, onSwitchSession, onDeleteSession, onRenameSession,
   chatSmart, setChatSmart, cerebroMode, setCerebroMode, internetMode, setInternetMode,
   investigationMode, setInvestigationMode, selectedMessages, setSelectedMessages,
-  iaMode, iaLocal, onToggleIaLocal }) {
+    researchPanel, onCloseResearch, onFetchResearchQuestions, onCreateResearch, onDeepenResearch, onLevelResearch,
+      onConfirmTopic, onOpenInvestigation, onCancelInvestigation, onGenerateTopic, onToggleSelectMessages, onOpenResearch, onDismissResearch,
+  researchHistory, onSetResearchView, onOpenHistoryDoc, onNewResearch,
+      iaMode, iaLocal, onToggleIaLocal, toast }) {
+
+    const touchXRef = useRef(null) // ponytail: swipe móvil — borde izq abre chats, deslizar a la izq cierra
+    // fase 2 visor-md: preview del doc investigado desde el panel → DocReader (con edición)
+    const [docPreview, setDocPreview] = useState(null)
+  const handleTouchStart = (e) => { touchXRef.current = e.touches[0].clientX }
+  const handleTouchMove = (e) => {
+    if (touchXRef.current == null) return
+    const dx = e.touches[0].clientX - touchXRef.current
+    if (!showSessionPanel && touchXRef.current < 30 && dx > 60) { setShowSessionPanel(true); touchXRef.current = null }
+    else if (showSessionPanel && dx < -60) { setShowSessionPanel(false); touchXRef.current = null }
+  }
 
   const [showAddPopup, setShowAddPopup] = useState(false)
   const [showSessionPanel, setShowSessionPanel] = useState(false)
@@ -22,7 +39,7 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
   const [saveProjectMode, setSaveProjectMode] = useState('existing') // existing | new
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectDesc, setNewProjectDesc] = useState('')
-  const [newProjectColor, setNewProjectColor] = useState('#4edea3')
+  const [newProjectColor, setNewProjectColor] = useState('#6FCF97')
   const prevSmartRef = useRef(false) // ponytail: restaurar chatSmart al desactivar cerebro
   const messagesRef = useRef(null) // ponytail: auto-scroll al enviar
   const bottomRef = useRef(null) // ponytail: anchor para scrollIntoView
@@ -92,61 +109,65 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
 
   return (
     <div
-      style={{ position: 'relative', minHeight: 'calc(100vh - 72px - 2 * var(--space-7))', display: 'flex', flexDirection: 'column' }}
+      className="chat-root" style={{ position: 'relative', display: 'flex', flexDirection: 'column' }}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
     >
       {chatDragOver && (
-        <div style={{ position: 'absolute', inset: 0, background: 'rgba(173,198,255,0.15)', border: '3px dashed var(--color-primary)', borderRadius: 'var(--radius-lg)', zIndex: 10, pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <div style={{ position: 'absolute', inset: 0, background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', border: '3px dashed var(--color-primary)', borderRadius: 'var(--radius-lg)', zIndex: 10, pointerEvents: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ fontSize: '1.5rem', fontWeight: 600, color: 'var(--color-primary)', background: 'var(--color-bg)', padding: '1rem 2rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--color-primary)' }}>Suelta tu archivo aquí</div>
         </div>
       )}
 
-      {/* Chat header — botón Chats + título sesión */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-5)', paddingBottom: 'var(--space-4)', borderBottom: '1px solid var(--color-surface-high)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
-          <button className="btn-app btn-app-secondary" onClick={() => setShowSessionPanel(!showSessionPanel)} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>forum</span>
-            Chats
-          </button>
-          <h2 style={{ fontSize: 24, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <span className="material-symbols-outlined" style={{ color: 'var(--color-primary)' }}>chat</span>
-            Habla con {editAgentName || 'Hermes'}
-          </h2>
-        </div>
+      {/* Chat header — solo botón Chats (desktop); el título vive en la barra superior. Móvil: swipe */}
+      <div className="chat-header" style={{ marginBottom: 'var(--space-3)', paddingBottom: 'var(--space-2)', borderBottom: '1px solid color-mix(in srgb, var(--color-surface-high) 60%, transparent)' }}>
+        <button className="chat-chats-btn btn-app btn-app-secondary" onClick={() => setShowSessionPanel(!showSessionPanel)}>
+          <span className="material-symbols-outlined" style={{ fontSize: 18 }}>forum</span>
+          Chats
+        </button>
       </div>
 
       <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {/* Panel lateral sesiones */}
         {showSessionPanel && (
-          <div style={{ width: 260, borderRight: '1px solid var(--color-surface-high)', overflowY: 'auto', flexShrink: 0, paddingRight: 'var(--space-3)' }}>
-            <button className="btn-app btn-app-primary" onClick={() => { onNewSession?.(); setShowSessionPanel(false) }} style={{ width: '100%', marginBottom: 'var(--space-3)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)', justifyContent: 'center' }}>
-              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
-              Nuevo chat
-            </button>
-            {(sessions || []).map(s => (
-              <div key={s.id} style={{ padding: 'var(--space-3)', marginBottom: 'var(--space-2)', borderRadius: 'var(--radius-md)', cursor: 'pointer', background: s.id === activeSessionId ? 'var(--color-surface-container)' : 'transparent', border: '1px solid', borderColor: s.id === activeSessionId ? 'var(--color-primary)' : 'var(--color-surface-high)', transition: 'all var(--transition-fast)' }}
-                onClick={() => { onSwitchSession?.(s.id); setShowSessionPanel(false) }}>
-                {renamingId === s.id ? (
-                  <div style={{ display: 'flex', gap: 4 }}>
-                    <input className="input-app" style={{ flex: 1, fontSize: 13 }} value={renameText} onChange={e => setRenameText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { onRenameSession?.(s.id, renameText); setRenamingId(null) } }} autoFocus />
-                    <button className="btn-app btn-app-secondary" style={{ padding: '2px 6px' }} onClick={e => { e.stopPropagation(); onRenameSession?.(s.id, renameText); setRenamingId(null) }}>✓</button>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title || 'Sin título'}</span>
-                    <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-                      <button onClick={e => { e.stopPropagation(); setRenamingId(s.id); setRenameText(s.title || '') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: '2px' }}><span className="material-symbols-outlined" style={{ fontSize: 14 }}>edit</span></button>
-                      <button onClick={e => { e.stopPropagation(); onDeleteSession?.(s.id) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-error)', padding: '2px' }}><span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span></button>
+          // ponytail: móvil → overlay full-ventana; desktop → columna lateral
+          <div className="chat-sessions" style={{ width: 260, borderRight: '1px solid color-mix(in srgb, var(--color-surface-high) 60%, transparent)', overflowY: 'auto', flexShrink: 0, paddingRight: 'var(--space-3)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-2)' }}>
+                      <span className="label-caps">Chats</span>
+                      {/* ponytail: en móvil fullscreen el botón Chats queda tapado — salida visible */}
+                      <button onClick={() => setShowSessionPanel(false)} className="btn-app btn-app-secondary" style={{ width: 28, height: 28, padding: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: 16 }}>close</span>
+                      </button>
                     </div>
+                    <button className="btn-app btn-app-primary" onClick={() => { onNewSession?.(); setShowSessionPanel(false) }} style={{ width: '100%', marginBottom: 'var(--space-3)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)', justifyContent: 'center' }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
+                      Nuevo chat
+                    </button>
+                    {(sessions || []).map(s => (
+                      <div key={s.id} style={{ padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-2)', borderRadius: 'var(--radius-md)', cursor: 'pointer', background: s.id === activeSessionId ? 'color-mix(in srgb, var(--color-primary) 8%, transparent)' : 'transparent', border: '1px solid', borderColor: s.id === activeSessionId ? 'var(--color-primary)' : 'var(--color-surface-high)', transition: 'all var(--transition-fast)' }}
+                        onClick={() => { onSwitchSession?.(s.id); setShowSessionPanel(false) }}>
+                        {renamingId === s.id ? (
+                          <div style={{ display: 'flex', gap: 4 }}>
+                            <input className="input-app" style={{ flex: 1, fontSize: 13 }} value={renameText} onChange={e => setRenameText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { onRenameSession?.(s.id, renameText); setRenamingId(null) } }} autoFocus />
+                            <button className="btn-app btn-app-secondary" style={{ padding: '2px 6px' }} onClick={e => { e.stopPropagation(); onRenameSession?.(s.id, renameText); setRenamingId(null) }}>✓</button>
+                          </div>
+                        ) : (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{s.title || 'Sin título'}</span>
+                            <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                              <button onClick={e => { e.stopPropagation(); setRenamingId(s.id); setRenameText(s.title || '') }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: '2px' }}><span className="material-symbols-outlined" style={{ fontSize: 14 }}>edit</span></button>
+                              <button onClick={e => { e.stopPropagation(); onDeleteSession?.(s.id) }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-error)', padding: '2px' }}><span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span></button>
+                            </div>
+                          </div>
+                        )}
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.7rem', color: 'var(--color-text-tertiary)', marginTop: 2 }}>{s.updatedAt ? new Date(s.updatedAt).toLocaleDateString() : ''}</div>
+                      </div>
+                    ))}
                   </div>
                 )}
-                <div style={{ fontSize: '0.7rem', color: 'var(--color-text-tertiary)', marginTop: 2 }}>{s.updatedAt ? new Date(s.updatedAt).toLocaleDateString() : ''}</div>
-              </div>
-            ))}
-          </div>
-        )}
 
         {/* Messages */}
         <div ref={messagesRef} style={{ flex: 1, overflowY: 'auto', marginBottom: 'var(--space-4)', paddingLeft: showSessionPanel ? 'var(--space-4)' : 0 }}>
@@ -157,35 +178,42 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
             </div>
           )}
           {chatMessages.map((msg, i) => (
-            <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 'var(--space-4)', alignItems: 'flex-start', gap: 'var(--space-2)' }}>
-              {investigationMode && (
-                <input type="checkbox" checked={selectedMessages.includes(i)} onChange={() => toggleMessageSelection(i)} style={{ marginTop: 8, cursor: 'pointer', accentColor: 'var(--color-primary)' }} />
-              )}
-              <div style={{
-                maxWidth: '75%', padding: 'var(--space-4) var(--space-5)',
-                borderRadius: 'var(--radius-md)',
-                borderTopRightRadius: msg.role === 'user' ? '2px' : 'var(--radius-md)',
-                borderTopLeftRadius: msg.role === 'assistant' ? '2px' : 'var(--radius-md)',
-                // ponytail: highlight visual si mensaje está seleccionado en modo investigar
-                background: investigationMode && selectedMessages.includes(i) ? 'rgba(173,198,255,0.15)' : msg.role === 'user' ? 'var(--color-surface-high)' : 'var(--color-surface-container)',
-                border: investigationMode && selectedMessages.includes(i) ? '1px solid var(--color-primary)' : '1px solid var(--color-surface-high)',
-                borderLeft: msg.role === 'assistant' ? '3px solid var(--color-primary)' : '1px solid var(--color-surface-high)',
-              }}>
-                {msg.role === 'assistant' && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--color-primary)', fontVariationSettings: "'FILL' 1" }}>electric_bolt</span>
-                    <span className="label-caps" style={{ color: 'var(--color-primary)' }}>{(editAgentName || 'HERMES').toUpperCase()}</span>
-                    {/* ponytail: badge 🔒/☁️ = estado del toggle al enviar (ctx.local persiste en sesión) */}
-                    {msg.context && typeof msg.context.local === 'boolean' && (
-                      <span title={msg.context.local ? 'Respuesta generada localmente (privada)' : 'Respuesta generada por cloud'} style={{ fontSize: 13 }}>{msg.context.local ? '🔒' : '☁️'}</span>
-                    )}
-                  </div>
-                )}
+                      <div key={i} style={{ display: 'flex', justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start', marginBottom: 'var(--space-5)', alignItems: 'flex-start', gap: 'var(--space-3)' }}>
+                        {investigationMode && (
+                          <input type="checkbox" checked={selectedMessages.includes(i)} onChange={() => toggleMessageSelection(i)} style={{ marginTop: 8, cursor: 'pointer', accentColor: 'var(--color-primary)' }} />
+                        )}
+                        {msg.role === 'assistant' && (
+                          // ponytail: avatar agente — electric_bolt en círculo color-mix primary
+                          <div style={{ width: 28, height: 28, borderRadius: 'var(--radius-full)', background: 'color-mix(in srgb, var(--color-primary) 15%, transparent)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 2 }}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--color-primary)', fontVariationSettings: "'FILL' 1" }}>electric_bolt</span>
+                          </div>
+                        )}
+                        <div style={{
+                          maxWidth: '75%', padding: 'var(--space-4) var(--space-5)',
+                          borderRadius: 'var(--radius-md)',
+                          borderTopRightRadius: msg.role === 'user' ? '2px' : 'var(--radius-md)',
+                          borderTopLeftRadius: msg.role === 'assistant' ? '2px' : 'var(--radius-md)',
+                          // ponytail: menos bordes — solo borde cuando el mensaje está seleccionado en modo investigar
+                          background: investigationMode && selectedMessages.includes(i) ? 'color-mix(in srgb, var(--color-primary) 15%, transparent)' : msg.role === 'user' ? 'color-mix(in srgb, var(--color-primary) 10%, transparent)' : 'var(--color-surface-container)',
+                          border: investigationMode && selectedMessages.includes(i) ? '1px solid var(--color-primary)' : 'none',
+                        }}>
+                          {msg.role === 'assistant' && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginBottom: 'var(--space-2)' }}>
+                              <span className="label-caps" style={{ color: 'var(--color-primary)' }}>{(editAgentName || 'HERMES').toUpperCase()}</span>
+                              {/* ponytail: badge chip Privado/Nube = estado del toggle al enviar (ctx.local persiste en sesión) */}
+                              {msg.context && typeof msg.context.local === 'boolean' && (
+                                <span title={msg.context.local ? 'Respuesta generada localmente (privada)' : 'Respuesta generada por nube'} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em', padding: '1px 8px', borderRadius: 'var(--radius-full)', background: `color-mix(in srgb, ${msg.context.local ? 'var(--color-success)' : 'var(--color-cloud)'} 15%, transparent)`, color: msg.context.local ? 'var(--color-success)' : 'var(--color-cloud)' }}>
+                                  <span className="material-symbols-outlined" style={{ fontSize: 11 }}>{msg.context.local ? 'lock' : 'cloud'}</span>
+                                  {msg.context.local ? 'PRIVADO' : 'NUBE'}
+                                </span>
+                              )}
+                            </div>
+                          )}
                 <div style={{ lineHeight: 1.6, fontSize: 15 }}>
                   {/* ponytail: markdown en burbujas — MarkdownViewer ya existente; fallback pre-wrap para user/errores */}
                   {msg.role === 'assistant'
-                    ? <MarkdownViewer content={msg.content} />
-                    : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
+                                      ? <MarkdownViewer content={msg.content} compact />
+                                      : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
                   {msg.attachment && (
                     <div style={{ marginTop: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', background: 'var(--color-surface-high)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--color-surface-high)', fontSize: '0.85rem', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
                       <span className="material-symbols-outlined" style={{ fontSize: 16 }}>attach_file</span>
@@ -196,9 +224,9 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
                 {/* ponytail: botones post-respuesta de investigación — usan fullDoc, no el resumen del bubble */}
                 {msg.role === 'assistant' && msg.context && msg.context.is_document && msg.context.offer_save && (
                   <div style={{ marginTop: 'var(--space-3)', display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-                    <button className="chat-action-btn" onClick={() => handleDownload(msg.fullDoc || msg.content, msg._originalQuery || 'investigacion')} disabled={chatLoading}>⬇️ Descargar</button>
-                    <button className="chat-action-btn" onClick={() => setPreviewDoc({ content: msg.fullDoc || msg.content, query: msg._originalQuery })} disabled={chatLoading}>👁️ Visualizar</button>
-                    <button className="chat-action-btn primary" onClick={() => { setShowSavePopup({ content: msg.fullDoc || msg.content }); setSaveName(''); setSaveDesc('') }} disabled={chatLoading}>🧠 Añadir al cerebro</button>
+                    <button className="chat-action-btn" onClick={() => handleDownload(msg.full_doc || msg.fullDoc || msg.content, msg._originalQuery || 'investigacion')} disabled={chatLoading}><span className="material-symbols-outlined">download</span>Descargar</button>
+                                                            <button className="chat-action-btn" onClick={() => setPreviewDoc({ content: msg.full_doc || msg.fullDoc || msg.content, query: msg._originalQuery, brainPath: (msg.context && msg.context.brain_path) || '' })} disabled={chatLoading}><span className="material-symbols-outlined">visibility</span>Visualizar</button>
+                                                            <button className="chat-action-btn primary" onClick={() => { setShowSavePopup({ content: msg.full_doc || msg.fullDoc || msg.content }); setSaveName(''); setSaveDesc('') }} disabled={chatLoading}><span className="material-symbols-outlined">psychology</span>Añadir al cerebro</button>
                   </div>
                 )}
               </div>
@@ -253,72 +281,71 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
       )}
 
       {/* Barra de botones + input */}
-      <div style={{ position: 'sticky', bottom: 0, paddingTop: 'var(--space-4)' }}>
-        <div style={{ marginBottom: 'var(--space-2)', display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap' }}>
-          <button className="btn-app btn-app-secondary" onClick={() => setShowAddPopup(true)} disabled={chatLoading || chatUploading} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-            <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
-            Añadir archivos
-          </button>
-          {/* Chat inteligente — toggle */}
-          <button onClick={() => setChatSmart(!chatSmart)} disabled={chatLoading || cerebroMode}
-            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading || cerebroMode ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: chatSmart ? 'var(--color-primary)' : 'var(--color-surface-high)', border: chatSmart ? '1px solid var(--color-primary)' : '1px solid var(--color-border)', color: chatSmart ? '#0e0e0e' : 'var(--color-text-secondary)', opacity: cerebroMode ? 0.4 : 1, transition: 'all var(--transition-fast)' }}
-            title="Chat con modelo más inteligente">
-            <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: chatSmart ? "'FILL' 1" : 'normal' }}>auto_awesome</span>
-            Chat inteligente
-          </button>
-          {/* Cerebro — toggle */}
-          <button onClick={toggleCerebro} disabled={chatLoading}
-            style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: cerebroMode ? 'var(--color-success)' : 'var(--color-surface-high)', border: cerebroMode ? '1px solid var(--color-success)' : '1px solid var(--color-border)', color: cerebroMode ? '#0e0e0e' : 'var(--color-text-secondary)', transition: 'all var(--transition-fast)' }}
-            title={cerebroMode ? 'Cerebro ON — busca en tu conocimiento' : 'Cerebro OFF — chat normal'}>
-            <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: cerebroMode ? "'FILL' 1" : 'normal' }}>psychology</span>
-            Cerebro
-          </button>
-          {/* Búsqueda Internet — solo visible si Cerebro ON */}
-          {cerebroMode && (
-            <button onClick={() => setInternetMode(!internetMode)} disabled={chatLoading}
-              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: chatLoading ? 'default' : 'pointer', fontSize: 13, fontWeight: 600, background: internetMode ? 'var(--color-primary)' : 'var(--color-surface-high)', border: internetMode ? '1px solid var(--color-primary)' : '1px solid var(--color-border)', color: internetMode ? '#0e0e0e' : 'var(--color-text-secondary)', transition: 'all var(--transition-fast)' }}
-              title="Buscar también en internet">
-              <span className="material-symbols-outlined" style={{ fontSize: 18, fontVariationSettings: internetMode ? "'FILL' 1" : 'normal' }}>public</span>
-              Búsqueda en Internet
-            </button>
-          )}
-          {/* ponytail: toggle Local/Cloud — solo en modo both (local/cloud fijos se muestran como estado) */}
-          {iaMode && (iaMode.mode === 'both' || iaMode.localMode) && (
-            <button onClick={() => iaMode.mode === 'both' && onToggleIaLocal?.()} disabled={chatLoading}
-              style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-4)', borderRadius: 'var(--radius-md)', cursor: iaMode.mode === 'both' && !chatLoading ? 'pointer' : 'default', fontSize: 13, fontWeight: 600, background: iaLocal ? 'var(--color-success)' : '#f59e0b', border: '1px solid', borderColor: iaLocal ? 'var(--color-success)' : '#f59e0b', color: '#0e0e0e', transition: 'all var(--transition-fast)' }}
-              title={iaMode.mode === 'both' ? (iaLocal ? 'Local — tus datos no salen de tu máquina' : 'Cloud — usa modelos en la nube') : (iaLocal ? 'Modo fijo: Local' : 'Modo fijo: Cloud')}>
-              <span className="material-symbols-outlined" style={{ fontSize: 18 }}>{iaLocal ? 'lock' : 'cloud'}</span>
-              {iaLocal ? 'Local' : 'Cloud'}
-            </button>
-          )}
-          {/* Investigar — toggle. Cuando activo, botón Investigar envía el input directo sin seleccionar mensajes */}
-          <div style={{ marginLeft: 'auto' }}>
-            {investigationMode ? (
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="btn-app btn-app-secondary" onClick={() => { setInvestigationMode(false); setSelectedMessages([]) }} disabled={chatLoading}>Cancelar</button>
-                <button className="btn-app btn-app-primary" onClick={() => {
-                  if (chatMessage.trim()) {
-                    onInvestigate?.([{ role: 'user', content: chatMessage }])
-                    setChatMessage('')
-                  } else if (selectedMessages.length > 0) {
-                    onInvestigate?.(selectedMessages)
-                  }
-                }} disabled={chatLoading || (!chatMessage.trim() && selectedMessages.length === 0)}>
-                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>search</span>
-                  {chatMessage.trim() ? 'Investigar' : `Investigar (${selectedMessages.length})`}
+            <div style={{ position: 'sticky', bottom: 0, paddingTop: 'var(--space-4)' }}>
+              {/* ponytail: fila única nowrap — Investigar nunca cae de línea (queja desktop estrecho) */}
+              <div className="chat-tools-row">
+                <button className="btn-app btn-app-secondary" onClick={() => setShowAddPopup(true)} disabled={chatLoading || chatUploading} style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0 }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>add</span>
+                  <span className="chat-btn-label">Añadir archivos</span>
                 </button>
+                {/* Chat inteligente — toggle */}
+                <button className={`chat-tool-btn${chatSmart ? ' active-primary' : ''}`} onClick={() => setChatSmart(!chatSmart)} disabled={chatLoading || cerebroMode}
+                  style={{ opacity: cerebroMode ? 0.4 : undefined }}
+                  title="Chat con modelo más inteligente">
+                  <span className="material-symbols-outlined" style={{ fontVariationSettings: chatSmart ? "'FILL' 1" : 'normal' }}>auto_awesome</span>
+                  <span className="chat-btn-label">Chat inteligente</span>
+                </button>
+                {/* Cerebro — toggle */}
+                <button className={`chat-tool-btn${cerebroMode ? ' active-success' : ''}`} onClick={toggleCerebro} disabled={chatLoading}
+                  title={cerebroMode ? 'Cerebro ON — busca en tu conocimiento' : 'Cerebro OFF — chat normal'}>
+                  <span className="material-symbols-outlined" style={{ fontVariationSettings: cerebroMode ? "'FILL' 1" : 'normal' }}>psychology</span>
+                  <span className="chat-btn-label">Cerebro</span>
+                </button>
+                {/* Internet — solo visible si Cerebro ON */}
+                {cerebroMode && (
+                  <button className={`chat-tool-btn${internetMode ? ' active-primary' : ''}`} onClick={() => setInternetMode(!internetMode)} disabled={chatLoading}
+                    title="Buscar también en internet">
+                    <span className="material-symbols-outlined" style={{ fontVariationSettings: internetMode ? "'FILL' 1" : 'normal' }}>public</span>
+                    <span className="chat-btn-label">Internet</span>
+                  </button>
+                )}
+                {/* ponytail: toggle Privado/Nube — solo en modo both (fijos se muestran como estado) */}
+                {iaMode && (iaMode.mode === 'both' || iaMode.localMode) && (
+                  <button className={`chat-tool-btn${iaLocal ? ' active-success' : ' active-cloud'}`} onClick={() => iaMode.mode === 'both' && onToggleIaLocal?.()} disabled={chatLoading}
+                    title={iaMode.mode === 'both' ? (iaLocal ? 'Privado — tus datos no salen de tu máquina' : 'Nube — usa modelos en la nube') : (iaLocal ? 'Modo fijo: Privado' : 'Modo fijo: Nube')}>
+                    <span className="material-symbols-outlined">{iaLocal ? 'lock' : 'cloud'}</span>
+                    <span className="chat-btn-label">{iaLocal ? 'Privado' : 'Nube'}</span>
+                  </button>
+                )}
+                {/* Investigar — abre el panel directamente (tema tecleado o selección de mensajes). Sin botón primario: el panel manda */}
+                                <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--space-2)', flexShrink: 0 }}>
+                                                  {investigationMode ? (
+                                                    <>
+                                                      <button className="btn-app btn-app-secondary" onClick={onCancelInvestigation} disabled={chatLoading}>Cancelar</button>
+                                                      <button className="btn-app btn-app-secondary" onClick={onOpenResearch} disabled={chatLoading}
+                                                        style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', whiteSpace: 'nowrap' }}>
+                                                        <span className="material-symbols-outlined" style={{ fontSize: 18 }}>science</span>
+                                                        Investigador
+                                                      </button>
+                                                    </>
+                                                  ) : (
+                                    <button className="btn-app btn-app-secondary" onClick={onOpenInvestigation} disabled={chatLoading}
+                                      style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', whiteSpace: 'nowrap' }}>
+                                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>search</span>
+                                      Investigar
+                                    </button>
+                                  )}
+                                </div>
               </div>
-            ) : (
-              <button className="btn-app btn-app-secondary" onClick={() => setInvestigationMode(true)} disabled={chatLoading}
-                style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>search</span>
-                Investigar
-              </button>
-            )}
-          </div>
-        </div>
         <input type="file" multiple ref={fileInputRef} style={{ display: 'none' }} onChange={(e) => { if (e.target.files.length) { handleFileSelect(e.target.files); e.target.value = '' } }} />
-        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', background: 'var(--color-surface-high)', border: `1.5px solid ${iaLocal ? 'var(--color-success)' : '#f59e0b'}`, borderRadius: 'var(--radius-md)', padding: 'var(--space-2)', transition: 'border-color var(--transition-fast)' }}>
+        {/* fase investigador: guardados en curso + modo cerebro → avisar que puede responder con datos aún no actualizados */}
+        {cerebroMode && brainUpdating && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', padding: 'var(--space-2) var(--space-3)', marginBottom: 'var(--space-2)', borderRadius: 'var(--radius-md)', background: 'color-mix(in srgb, var(--color-primary) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--color-primary) 35%, transparent)', fontSize: 12, color: 'var(--color-text-secondary)' }}>
+            <span className="material-symbols-outlined research-spin" style={{ fontSize: 16 }}>progress_activity</span>
+            Actualizando documentos del cerebro — el chat puede responder con datos aún no actualizados
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', background: 'var(--color-surface)', borderRadius: 'var(--radius-lg)', padding: 'var(--space-2)' }}>
           <button onClick={() => fileInputRef.current?.click()} disabled={chatLoading || chatUploading} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--color-text-tertiary)', padding: 'var(--space-2)' }} title="Adjuntar archivo rápido">
             <span className="material-symbols-outlined">attach_file</span>
           </button>
@@ -334,31 +361,69 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
         </div>
       </div>
 
-      {/* Vista previa modal */}
-      {previewDoc && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={() => setPreviewDoc(null)}>
-          <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-lg)', maxWidth: 700, maxHeight: '80vh', width: '100%', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 'var(--space-4) var(--space-5)', borderBottom: '1px solid var(--color-surface-high)' }}>
-              <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
-                <span className="material-symbols-outlined" style={{ fontSize: 20 }}>description</span>Vista previa
-              </h3>
-              <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button className="chat-action-btn" onClick={() => handleDownload(previewDoc.content, previewDoc.query)}>⬇️ Descargar .md</button>
-                <button className="chat-action-btn primary" onClick={() => { setShowSavePopup({ content: previewDoc.content }); setPreviewDoc(null); setSaveName(''); setSaveDesc('') }}>🧠 Añadir al cerebro</button>
-                <button onClick={() => setPreviewDoc(null)} className="btn-app btn-app-secondary" style={{ width: 32, height: 32, padding: 0 }}>
-                  <span className="material-symbols-outlined" style={{ fontSize: 18 }}>close</span>
-                </button>
-              </div>
-            </div>
-            <div style={{ overflowY: 'auto', padding: 'var(--space-5)', flex: 1 }}>{previewDoc && <MarkdownViewer content={previewDoc.content} />}</div>
-          </div>
-        </div>
-      )}
+      {/* Vista previa modal → DocReader */}
+            {previewDoc && (
+              <DocReader title="Vista previa" context={previewDoc.query} content={previewDoc.content} onClose={() => setPreviewDoc(null)}
+                status={{ in_graph: !!previewDoc.brainPath, stale: false }}
+                onSaveEdit={(draft) => {
+                  // fase investigador: job en background — matraz anima + toast al terminar
+                  const name = (draft.match(/^#\s+(.+)$/m) || [])[1] || previewDoc.query || 'investigacion'
+                  startSaveJob({ path: previewDoc.brainPath, oldContent: previewDoc.content, newContent: draft, name, sessionId: activeSessionId }).catch(e => toast?.({ type: 'error', text: String(e.message || e) }))
+                  setPreviewDoc(null)
+                }}
+                actions={[
+                  <button key="dl" className="chat-action-btn" onClick={() => handleDownload(previewDoc.content, previewDoc.query)}><span className="material-symbols-outlined">download</span>Descargar .md</button>,
+                  <button key="save" className="chat-action-btn primary" onClick={() => { setShowSavePopup({ content: previewDoc.content }); setPreviewDoc(null); setSaveName(''); setSaveDesc('') }}><span className="material-symbols-outlined">psychology</span>Añadir al cerebro</button>,
+                ]} />
+            )}
+
+      {/* Investigador v2 — panel deslizante derecho (estado en App) */}
+            {researchPanel && researchPanel.open && (
+              <ResearchPanel panel={researchPanel} onClose={onCloseResearch} onQuestions={onFetchResearchQuestions}
+                        onCreate={onCreateResearch} onDeepen={onDeepenResearch} onLevel={onLevelResearch}
+                                  onConfirmTopic={onConfirmTopic}
+                                  onGenerateTopic={onGenerateTopic}
+                                  selectingMessages={investigationMode}
+                                  onToggleSelectMessages={onToggleSelectMessages}
+                                  researchHistory={researchHistory}
+                                  onSetView={onSetResearchView}
+                                  onOpenHistoryDoc={onOpenHistoryDoc}
+                                  onNewResearch={onNewResearch}
+                                  onDownload={handleDownload}
+                                                      onSaveBrain={(content) => { setShowSavePopup({ content }); setSaveName(''); setSaveDesc('') }}
+                                                      onPreviewDoc={(content, topic, brainPath) => setDocPreview({ content, topic, brainPath: brainPath || '' })}
+                                                      toast={toast} />
+                                                  )}
+
+                                                  {/* fase 2 visor-md: Ver documento del investigador → DocReader (encima del panel, z-index 100 > 98) */}
+                                                  {docPreview && (
+                                                    <DocReader
+                                                      title={docPreview.topic || 'Investigación'} context="Investigación" content={docPreview.content}
+                                                      status={{ in_graph: !!docPreview.brainPath, stale: false }}
+                                                      onClose={() => setDocPreview(null)}
+                                                      onSaveEdit={(draft) => {
+                                                        // fase investigador: job en background — matraz anima + toast al terminar
+                                                        const name = (draft.match(/^#\s+(.+)$/m) || [])[1] || docPreview.topic || 'investigacion'
+                                                        startSaveJob({ path: docPreview.brainPath, oldContent: docPreview.content, newContent: draft, name, sessionId: activeSessionId }).catch(e => toast?.({ type: 'error', text: String(e.message || e) }))
+                                                        setDocPreview(null)
+                                                      }}
+                                                      actions={[
+                                                        <a key="dl" className="chat-action-btn" download={`${(docPreview.topic || 'investigacion').slice(0, 40)}.md`} href={`data:text/markdown;charset=utf-8,${encodeURIComponent(docPreview.content)}`}>
+                                                          <span className="material-symbols-outlined">download</span>Descargar
+                                                        </a>,
+                                                        <button key="brain" className="chat-action-btn primary" onClick={() => { setShowSavePopup({ content: docPreview.content }); setSaveName(''); setSaveDesc('') }}>
+                                                          <span className="material-symbols-outlined">psychology</span>Añadir al cerebro
+                                                        </button>,
+                                                      ]} />
+                                                  )}
+
+                {/* fase 3: el cartel flotante de investigación se quitó — su función la cumple el icono TopRight (animado/bolita) */}
 
       {/* Popup añadir al cerebro */}
       {showSavePopup && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 'var(--space-6)' }} onClick={() => setShowSavePopup(null)}>
           <div style={{ background: 'var(--color-surface)', border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-lg)', maxWidth: 480, width: '100%', padding: 'var(--space-6)' }} onClick={e => e.stopPropagation()}>
+            <span className="label-caps" style={{ display: 'block', marginBottom: 'var(--space-1)' }}>Guardar</span>
             <h3 style={{ fontSize: 18, fontWeight: 600, color: 'var(--color-primary)', marginBottom: 'var(--space-4)' }}>Añadir al cerebro</h3>
             <div style={{ marginBottom: 'var(--space-4)' }}>
               <label style={{ fontSize: 13, color: 'var(--color-text-secondary)', marginBottom: 4, display: 'block' }}>Nombre del documento</label>
@@ -392,7 +457,11 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-3)', justifyContent: 'flex-end' }}>
               <button className="btn-app btn-app-secondary" onClick={() => setShowSavePopup(null)}>Cancelar</button>
-              <button className="btn-app btn-app-primary" onClick={handleSaveSubmit} disabled={chatLoading}>Añadir al cerebro</button>
+              <button className="btn-app btn-app-primary" onClick={handleSaveSubmit} disabled={chatLoading}>
+                {chatLoading
+                  ? <><span className="material-symbols-outlined research-spin" style={{ fontSize: 16 }}>progress_activity</span>Guardando…</>
+                  : 'Añadir al cerebro'}
+              </button>
             </div>
           </div>
         </div>
@@ -400,7 +469,7 @@ function ChatView({ editAgentName, chatMessages, chatMessage, chatLoading, chatU
 
       {showAddPopup && <AddFilesPopup onClose={handleClosePopup} projects={projects || []} onReloadProjects={onReloadProjects} />}
 
-      <style>{`.chat-action-btn{padding:4px 12px;background:var(--color-surface-high);border:1px solid var(--color-border);color:var(--color-text-primary);border-radius:var(--radius-md);cursor:pointer;font-size:13px}.chat-action-btn:hover{background:var(--color-surface-container)}.chat-action-btn.primary{background:var(--color-primary);color:#0e0e0e;border-color:var(--color-primary)}.chat-action-btn:disabled{opacity:.5;cursor:default}.chat-action-select{padding:4px 8px;background:var(--color-surface-high);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:var(--radius-sm);font-size:13px}@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   )
 }

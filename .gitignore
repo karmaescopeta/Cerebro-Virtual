@@ -32,6 +32,7 @@ frontend/dist/
 .vscode/
 .idea/
 .claude/
+graphify-out/
 *.swp
 *.swo
 
@@ -49,6 +50,9 @@ tests/__pycache__/
 installer/build/
 installer/dist/
 installer/__pycache__/
+# Dev sandboxes y planes de diseño (no van al repo: la app real es frontend/)
+frontend-test4/
+design-plans/
 
 ../cerebro-release/
 
