@@ -409,6 +409,130 @@ def set_base(path_str):
     return {"success": True, "base": str(BASE_DIR), "instances": len(list_instances())}
 
 
+def find_other_cerebros():
+    """v1.4: cerebros instalados en OTRAS carpetas del equipo. Docker sabe dónde vive cada
+    stack (docker compose ls) — sin escanear discos. Cada cerebro es un proyecto compose con
+    su carpeta instances/<nombre>; los de la base actual se excluyen."""
+    rc, out, _ = run(["docker", "compose", "ls", "--all", "--format", "json"], timeout=15)
+    result = {}
+    if rc == 0:
+        try:
+            for p in json.loads(out):
+                cfg = (p.get("ConfigFiles") or "").split(",")[0].strip()
+                name = (p.get("Name") or "").strip()
+                if not cfg or not name:
+                    continue
+                base = Path(cfg).resolve().parent
+                if base == Path(BASE_DIR).resolve():
+                    continue
+                if not ((base / "instances" / name) / ".env").exists():
+                    continue
+                g = result.setdefault(str(base), {"base": str(base), "cerebros": []})
+                g["cerebros"].append({"name": name, "encendido": "running" in (p.get("Status") or "")})
+        except Exception:
+            pass
+    return list(result.values())
+
+
+def move_cerebros(items):
+    """v1.4: mover cerebros encontrados en otras carpetas a la carpeta central.
+    Los para (aviso previo al usuario), muda la carpeta completa de cada uno
+    (vault + ajustes) y regenera los .env. Log en START_LOGS['move']."""
+    if START_LOGS.get("move", {}).get("done") is False:
+        return {"error": "Ya se está moviendo"}
+    clean = [{"base": str(Path(i["base"]).resolve()), "name": i["name"]}
+             for i in (items or []) if valid_name(i.get("name", ""))]
+    if not clean:
+        return {"error": "Nada que mover"}
+    for i in clean:
+        if not ((Path(i["base"]) / "instances" / i["name"]) / ".env").exists():
+            return {"error": f"No encuentro {i['name']} en {i['base']}"}
+        if (INSTANCES_DIR / i["name"]).exists():
+            return {"error": f"Ya existe un cerebro llamado {i['name']} aquí — renómbralo o bórralo antes"}
+    with LOG_LOCK:
+        START_LOGS["move"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        lines, ok = [], True
+        try:
+            for i in clean:
+                src = Path(i["base"]) / "instances" / i["name"]
+                lines.append(f"Moviendo {i['name']} (desde {i['base']})...")
+                project = read_env_path(src / ".env").get("COMPOSE_PROJECT_NAME", i["name"])
+                run(["docker", "compose", "-p", project, "-f", str(Path(i["base"]) / "docker-compose.yml"),
+                     "--env-file", str(src / ".env"), "stop"], timeout=120)
+                shutil.move(str(src), str(INSTANCES_DIR / i["name"]))
+                lines.append(f"{i['name']} mudado")
+            _rewrite_envs()
+            lines.append(f"Listo: {len(clean)} cerebro(s) ahora viven en {INSTANCES_DIR}")
+        except Exception as e:
+            ok = False
+            lines.append(f"Error: {e}")
+        with LOG_LOCK:
+            b = START_LOGS.get("move")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
+def read_env_path(env_file):
+    """Leer key=val de un .env por ruta (read_env es relativo a INSTANCES_DIR)."""
+    vals = {}
+    if Path(env_file).exists():
+        for line in Path(env_file).read_text(encoding="utf-8", errors="ignore").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                vals[k.strip()] = v.strip()
+    return vals
+
+
+def browse(path=""):
+    """v1.4: explorador de carpetas para elegir la ruta con clics (sin teclear rutas).
+    Sin path → discos (Windows) o / (Linux). Solo carpetas, nunca ficheros."""
+    p = (path or "").strip()
+    if not p:
+        if IS_WIN:
+            import string
+            drives = []
+            for letter in string.ascii_uppercase:
+                d = f"{letter}:\\"
+                if Path(d).exists():
+                    drives.append(d)
+            return {"path": "", "dirs": drives}
+        p = "/"
+    d = Path(p)
+    if not d.is_dir():
+        return {"error": f"No puedo abrir {p}"}
+    dirs = []
+    try:
+        for c in sorted(d.iterdir(), key=lambda x: x.name.lower()):
+            if not c.is_dir():
+                continue
+            n = c.name
+            if n.startswith(".") or n in ("$RECYCLE.BIN", "System Volume Information", "$WinREAgent"):
+                continue
+            dirs.append(n)
+    except PermissionError:
+        return {"error": f"Sin permiso para abrir {p}"}
+    parent = str(d.parent) if str(d.parent) != str(d) else ""
+    return {"path": str(d), "parent": parent, "dirs": dirs}
+
+
+def make_dir(path):
+    """v1.4: botón 'Nueva carpeta' del explorador."""
+    try:
+        p = Path((path or "").strip())
+        if not str(p) or not p.is_absolute():
+            return {"error": "Elige una carpeta válida primero"}
+        p.mkdir(parents=True, exist_ok=True)
+        return {"success": True, "path": str(p)}
+    except Exception as e:
+        return {"error": f"No puedo crear la carpeta: {e}"}
+
+
 def _dd_settings():
     return Path(os.environ.get("APPDATA", "")) / "Docker" / "settings-store.json"
 
@@ -710,6 +834,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             p = Path(sys._MEIPASS) / "index.html" if getattr(sys, "frozen", False) else Path(__file__).parent / "index.html"
             self._html(p.read_bytes()); return
         if self.path == "/api/requirements": self._json(check_requirements()); return
+        if self.path == "/api/scan-cerebros": self._json({"grupos": find_other_cerebros()}); return
+        if self.path.startswith("/api/browse"):
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get("path", [""])
+            self._json(browse(q[0])); return
         if self.path == "/api/instances": self._json({"instances": list_instances()}); return
         if self.path.startswith("/api/logs/"):
             name = urllib.parse.unquote(self.path.split("/api/logs/")[1])
@@ -754,6 +882,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(set_base(body.get("path", ""))); return
         if self.path == "/api/move-docker-data":
             self._json(move_docker_data(body.get("dest", ""))); return
+        if self.path == "/api/move-cerebros":
+            self._json(move_cerebros(body.get("items", []))); return
+        if self.path == "/api/mkdir":
+            self._json(make_dir(body.get("path", ""))); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return

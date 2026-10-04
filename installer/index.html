@@ -98,6 +98,10 @@ th { font-family: var(--font-mono); }
 .log-panel { background: var(--color-bg); border:1px solid var(--color-border); border-radius: var(--radius-md); padding:16px; font-family: var(--font-mono); font-size:12px; max-height:240px; overflow-y:auto; white-space:pre-wrap; }
 .toast-success { background:color-mix(in srgb, var(--color-success) 15%, transparent); color: var(--color-success); border:1px solid var(--color-success); }
 .toast-error { background:color-mix(in srgb, var(--color-error) 15%, transparent); color: var(--color-error); border:1px solid var(--color-error); }
+.brow-row { display:flex; align-items:center; gap:10px; padding:8px 12px; font-size:13px; color: var(--color-text-primary); cursor:pointer; border-bottom:1px solid var(--color-border); }
+.brow-row:last-child { border-bottom:none; }
+.brow-row:hover { background: var(--color-surface-high); }
+.brow-row .material-symbols-outlined { font-size:18px; color: var(--color-primary); }
 </style>
 </head>
 <body>
@@ -165,6 +169,7 @@ async function render() {
     </div>
   `;
   if (!projReady && !locAsked && !document.querySelector('.modal-overlay')) { locAsked = true; showLocationModal(); }
+  if (projReady) maybeScan();
 }
 
 function showCreateModal() {
@@ -190,14 +195,33 @@ async function startInst(n) {
   if (d.error) { toast(d.error, 'error'); return; }
   showLog(n);
 }
-let locAsked = false, dockerMoveRoot = null;
+let locAsked = false, scanDone = false, dockerMoveRoot = null, pickPath = "";
+async function browseGo(path) {
+  const d = await api(`/api/browse?path=${encodeURIComponent(path)}`);
+  const box = document.getElementById('browser');
+  if (!box) return null;
+  if (d.error) { toast(d.error, 'error'); return null; }
+  pickPath = d.path;
+  box.innerHTML = `<div style="font-family:var(--font-mono);font-size:12px;color:var(--color-text-secondary);background:var(--color-surface-container);border:1px solid var(--color-border);border-radius:var(--radius-md);padding:8px 12px;margin-bottom:8px;word-break:break-all;">${pickPath || 'Mi equipo'}</div><div style="max-height:260px;overflow-y:auto;border:1px solid var(--color-border);border-radius:var(--radius-md);">${d.parent !== undefined ? `<div class="brow-row" onclick="browseGo('${(d.parent || '').replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')"><span class="material-symbols-outlined">arrow_upward</span>.. (atrás)</div>` : ''}${(d.dirs || []).map(n => `<div class="brow-row" onclick="browseGo('${(pickPath ? pickPath.replace(/\\/g,'\\\\').replace(/'/g,"\\'") + (pickPath.endsWith('\\') || pickPath.endsWith('/') ? '' : '\\\\') : '') + n.replace(/\\/g,'\\\\').replace(/'/g,"\\'")}')"><span class="material-symbols-outlined">folder</span>${n}</div>`).join('')}</div>`;
+  return pickPath;
+}
+async function newFolder() {
+  if (!pickPath) { toast('Entra primero en un disco', 'error'); return; }
+  const n = prompt('Nombre de la carpeta nueva:');
+  if (!n) return;
+  const r = await api('/api/mkdir', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path: pickPath + (pickPath.endsWith('\\') ? '' : '\\') + n})});
+  if (r.error) { toast(r.error, 'error'); return; }
+  browseGo(pickPath); toast(`Carpeta "${n}" creada`);
+}
 function showLocationModal() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
   const isWin = window.__isWin;
-  m.innerHTML = `<div class="modal"><h2>¿Dónde está tu Cerebro Virtual?</h2><p class="subtitle" style="margin-bottom:20px;">Todo vivirá en esta carpeta: el sistema, una carpeta por cerebro con su vault${isWin ? ' y (opcional) los datos de Docker con el peso de las imágenes' : ''}. Si ya lo tenías instalado con un gestor anterior, apunta a su carpeta y recuperarás tus cerebros.</p><input class="input" id="inst-dir" placeholder="ej: D:\\Gestor de Cerebros" autofocus>${isWin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--color-text-secondary);"><input type="checkbox" id="dd-move"> Mover también los datos de Docker (imágenes/contenedores) a esta carpeta</label>' : ''}<div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button><button class="btn btn-secondary" id="sb-btn">Ya está instalado aquí</button>${window.__projReady ? '' : '<button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar aquí</button>'}</div></div>`;
+  m.innerHTML = `<div class="modal" style="max-width:560px;"><h2>¿Dónde guardo tus cerebros?</h2><p class="subtitle" style="margin-bottom:14px;">Elige con clics la carpeta donde guardar todo (el programa y cada cerebro con sus archivos). Puedes entrar en las carpetas, crear una nueva o cambiar de disco.</p><div id="browser"></div><div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="newFolder()"><span class="material-symbols-outlined">add</span>Nueva carpeta</button></div>${isWin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--color-text-secondary);"><input type="checkbox" id="dd-move"> Mover aquí también todo lo que descarga Docker — <b>libera espacio en el disco de Windows</b> (si tienes muchos GB, puede tardar un buen rato)</label>' : ''}<p class="subtitle" style="margin-top:12px;">¿Ya lo tenías instalado? Elige su carpeta con los clics y pulsa "Ya lo tengo instalado aquí" para recuperar tus cerebros.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button><button class="btn btn-secondary" id="sb-btn">Ya lo tengo instalado aquí</button>${window.__projReady ? '' : '<button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar en esta carpeta</button>'}</div></div>`;
   document.body.appendChild(m);
+  browseGo("");
   if (!window.__projReady) m.querySelector('#dl-btn').onclick = async () => {
-    const dest = m.querySelector('#inst-dir').value.trim();
+    if (!pickPath) { toast('Entra en una carpeta primero', 'error'); return; }
+    const dest = pickPath;
     if (isWin && m.querySelector('#dd-move') && m.querySelector('#dd-move').checked) dockerMoveRoot = dest;
     m.remove();
     const d = await api('/api/download-project', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest})});
@@ -205,11 +229,29 @@ function showLocationModal() {
     showLog('setup');
   };
   m.querySelector('#sb-btn').onclick = async () => {
-    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:m.querySelector('#inst-dir').value.trim()})});
+    if (!pickPath) { toast('Entra en la carpeta donde lo tienes instalado', 'error'); return; }
+    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:pickPath})});
     if (d.error) { toast(d.error, 'error'); return; }
-    m.remove(); toast(`Sistema encontrado — ${d.instances} cerebro(s)`); render();
+    m.remove(); toast(`Encontrado — tienes ${d.instances} cerebro(s)`); render(); maybeScan();
   };
-  m.querySelector('#inst-dir').onkeydown = e => { if (e.key==='Enter' && m.querySelector('#sb-btn')) m.querySelector('#sb-btn').click(); };
+}
+async function maybeScan() {
+  if (scanDone || !window.__projReady) return;
+  scanDone = true;
+  const d = await api('/api/scan-cerebros');
+  const grupos = d.grupos || [];
+  if (!grupos.length) return;
+  const total = grupos.reduce((n, g) => n + g.cerebros.length, 0);
+  const m = document.createElement('div'); m.className = 'modal-overlay';
+  m.innerHTML = `<div class="modal"><h2>He encontrado ${total} cerebro(s) en otras carpetas</h2><p class="subtitle" style="margin-bottom:16px;">Están instalados en otro sitio del equipo:<br>${grupos.map(g => `<span style="font-family:var(--font-mono);font-size:12px;">${g.base}</span> → ${g.cerebros.map(c => `<b>${c.name}</b>${c.encendido ? ' (se apagará un momento)' : ''}`).join(', ')}`).join('<br>')}<br><br>¿Los muevo todos a tu carpeta central? Así lo tendrás todo junto.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Dejarlos donde están</button><button class="btn btn-primary" id="mv-btn">Moverlos aquí</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#mv-btn').onclick = async () => {
+    m.remove();
+    const items = grupos.flatMap(g => g.cerebros.map(c => ({base: g.base, name: c.name})));
+    const r = await api('/api/move-cerebros', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items})});
+    if (r.error) { toast(r.error, 'error'); return; }
+    showLog('move');
+  };
 }
 async function startDockerMove(root) {
   const d = await api('/api/move-docker-data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest:root})});
@@ -234,7 +276,7 @@ function showLog(n) {
     box = document.createElement('div'); box.className = 'card'; box.id = 'logbox';
     document.getElementById('app').appendChild(box);
   }
-  box.innerHTML = `<h2>${n === 'setup' ? 'Descargando Cerebro Virtual' : n === 'deps' ? 'Instalando dependencias' : n === 'dockermove' ? 'Moviendo datos de Docker' : 'Iniciando ' + n}</h2>${n !== 'setup' && window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div class="log-panel" id="loglines"></div>`;
+  box.innerHTML = `<h2>${n === 'setup' ? 'Descargando Cerebro Virtual' : n === 'deps' ? 'Instalando dependencias' : n === 'dockermove' ? 'Moviendo los datos de Docker' : n === 'move' ? 'Moviendo tus cerebros' : 'Iniciando ' + n}</h2>${n !== 'setup' && window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div class="log-panel" id="loglines"></div>`;
   const poll = async () => {
     const d = await api(`/api/logs/${encodeURIComponent(n)}`);
     const el = document.getElementById('loglines');
@@ -249,6 +291,7 @@ function showLog(n) {
       }
       else if (n === 'deps') toast(d.ok ? 'Dependencias listas' : 'Algunas dependencias fallaron — mira el log', d.ok ? 'success' : 'error');
       else if (n === 'dockermove') toast(d.ok ? 'Datos de Docker movidos' : 'Error moviendo los datos de Docker — mira el log', d.ok ? 'success' : 'error');
+      else if (n === 'move') toast(d.ok ? 'Cerebros movidos a tu carpeta central' : 'Error moviendo cerebros — mira el log', d.ok ? 'success' : 'error');
       else d.ok ? toast(`${n} iniciado`) : toast(`Error al iniciar ${n}`, 'error');
       render();
       return;
