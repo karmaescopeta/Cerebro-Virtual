@@ -133,6 +133,7 @@ async function render() {
   if (imBase) window.__imgBaseOk = imBase.ok;
   window.__isWin = req.is_win !== false;
   const projReady = req.project_ready !== false;
+  window.__projReady = projReady;
 
   document.getElementById('app').innerHTML = `
     <div class="header">
@@ -157,7 +158,7 @@ async function render() {
       <div class="req-grid">${reqCards(porCerebro)}</div>
     </div>
     <div class="card">
-      <h2>Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span>` : ''}</h2>
+      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="showLocationModal()">Cambiar carpeta</button>` : ''}</h2>
       ${(inst.instances||[]).length ? `<table><thead><tr><th>Nombre</th><th>Frontend</th><th>Backend</th><th>Agente</th><th>Estado</th><th>Recursos</th><th>Acciones</th></tr></thead><tbody>
         ${(inst.instances||[]).map(i => `<tr><td style="font-weight:600;color:var(--color-primary);">${i.name}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.FRONTEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.BACKEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.AGENT_PORT||'-'}</td><td><span class="badge badge-${i.status==='running'?'running':'stopped'}">${i.status==='running'?'Activo':'Parado'}</span></td><td class="mono-cell">${[i.stats, i.size_gb].filter(Boolean).join(' · ')||'—'}</td><td class="actions-cell">${i.status==='running'?`<button class="btn btn-primary btn-sm" onclick="openInst('${i.name}', ${i.ports.FRONTEND_PORT||5173})"><span class="material-symbols-outlined">public</span>Abrir</button><button class="btn btn-secondary btn-sm" onclick="stopInst('${i.name}')">Parar</button>`:`<button class="btn btn-primary btn-sm" ${dockerOk?'':'disabled title="Arranca Docker primero"'} onclick="startInst('${i.name}')"><span class="material-symbols-outlined">electric_bolt</span>Iniciar</button>`}<button class="btn btn-secondary btn-sm btn-icon" title="Descargar vault" onclick="downloadInst('${i.name}')"><span class="material-symbols-outlined">download</span></button><button class="btn btn-sm btn-icon btn-icon-danger" title="Borrar" onclick="removeInst('${i.name}')"><span class="material-symbols-outlined">delete</span></button></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty-state"><span class="material-symbols-outlined">psychology</span><p>Aún no hay cerebros.</p><p style="margin-top:8px;font-size:13px;">Crea tu primer Cerebro con el botón de arriba.</p></div>`}
@@ -193,14 +194,9 @@ let locAsked = false, dockerMoveRoot = null;
 function showLocationModal() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
   const isWin = window.__isWin;
-  m.innerHTML = `<div class="modal"><h2>¿Dónde está tu Cerebro Virtual?</h2><p class="subtitle" style="margin-bottom:20px;">Todo vivirá en esta carpeta: el sistema, una carpeta por cerebro con su vault${isWin ? ' y (opcional) los datos de Docker con el peso de las imágenes' : ''}. Si ya lo tenías instalado con un gestor anterior, apunta a su carpeta y recuperarás tus cerebros.</p><input class="input" id="inst-dir" placeholder="ej: D:\\Gestor de Cerebros" autofocus>${isWin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--color-text-secondary);"><input type="checkbox" id="dd-move"> Mover también los datos de Docker (imágenes/contenedores) a esta carpeta</label>' : ''}<div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button><button class="btn btn-secondary" id="sb-btn">Ya está instalado aquí</button><button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar aquí</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>¿Dónde está tu Cerebro Virtual?</h2><p class="subtitle" style="margin-bottom:20px;">Todo vivirá en esta carpeta: el sistema, una carpeta por cerebro con su vault${isWin ? ' y (opcional) los datos de Docker con el peso de las imágenes' : ''}. Si ya lo tenías instalado con un gestor anterior, apunta a su carpeta y recuperarás tus cerebros.</p><input class="input" id="inst-dir" placeholder="ej: D:\\Gestor de Cerebros" autofocus>${isWin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--color-text-secondary);"><input type="checkbox" id="dd-move"> Mover también los datos de Docker (imágenes/contenedores) a esta carpeta</label>' : ''}<div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button><button class="btn btn-secondary" id="sb-btn">Ya está instalado aquí</button>${window.__projReady ? '' : '<button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar aquí</button>'}</div></div>`;
   document.body.appendChild(m);
-  m.querySelector('#sb-btn').onclick = async () => {
-    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:m.querySelector('#inst-dir').value.trim()})});
-    if (d.error) { toast(d.error, 'error'); return; }
-    m.remove(); toast(`Sistema encontrado — ${d.instances} cerebro(s)`); render();
-  };
-  m.querySelector('#dl-btn').onclick = async () => {
+  if (!window.__projReady) m.querySelector('#dl-btn').onclick = async () => {
     const dest = m.querySelector('#inst-dir').value.trim();
     if (isWin && m.querySelector('#dd-move') && m.querySelector('#dd-move').checked) dockerMoveRoot = dest;
     m.remove();
@@ -208,7 +204,12 @@ function showLocationModal() {
     if (d.error) { toast(d.error, 'error'); return; }
     showLog('setup');
   };
-  m.querySelector('#inst-dir').onkeydown = e => { if (e.key==='Enter') m.querySelector('#dl-btn').click(); };
+  m.querySelector('#sb-btn').onclick = async () => {
+    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:m.querySelector('#inst-dir').value.trim()})});
+    if (d.error) { toast(d.error, 'error'); return; }
+    m.remove(); toast(`Sistema encontrado — ${d.instances} cerebro(s)`); render();
+  };
+  m.querySelector('#inst-dir').onkeydown = e => { if (e.key==='Enter' && m.querySelector('#sb-btn')) m.querySelector('#sb-btn').click(); };
 }
 async function startDockerMove(root) {
   const d = await api('/api/move-docker-data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest:root})});
