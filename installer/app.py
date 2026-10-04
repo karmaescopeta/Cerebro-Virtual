@@ -4,13 +4,36 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.3.0"
+GESTOR_VERSION = "1.4.0"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
+IS_WIN = os.name == "nt"
+# v1.4: enlaces directos de descarga + paquetes para el botón instalar-todo
+_DL_URLS = {
+    "docker": "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe" if IS_WIN else "https://docs.docker.com/engine/install/",
+    "git": "https://git-scm.com/download/win" if IS_WIN else "https://git-scm.com/download/linux",
+    "python": "https://www.python.org/downloads/",
+}
+_WINGET_PKGS = {"docker": "Docker.DockerDesktop", "git": "Git.Git", "python": "Python.Python.3.12"}
+_APT_PKGS = {"docker": "docker.io", "git": "git", "python": "python3"}
+
+
+def _config_file() -> Path:
+    # v1.4: gestor.json junto al exe recuerda la carpeta de instalación elegida (sobrevive a updates del exe)
+    return (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent) / "gestor.json"
+
+
 def _find_base() -> Path:
-    """Raíz del proyecto: buscar docker-compose.yml alrededor del exe.
+    """Raíz del proyecto: primero la carpeta elegida por el usuario (gestor.json),
+    luego buscar docker-compose.yml alrededor del exe.
     ponytail: funciona incrustado en el repo (hacia arriba) o standalone
     (proyecto descargado como hijo del exe); fallback = legacy installer/dist/."""
+    try:
+        saved = json.loads(_config_file().read_text(encoding="utf-8")).get("base", "")
+        if saved and (Path(saved) / "docker-compose.yml").exists():
+            return Path(saved)
+    except Exception:
+        pass
     frozen = getattr(sys, "frozen", False)
     start = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
     for child in ("cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
@@ -198,11 +221,21 @@ def instance_create(name):
     return {"success": True, "ports": ports}
 
 
-def download_project():
-    """Instalación de un solo archivo: descarga el repo en zip junto al exe y lo descomprime.
+def download_project(dest_str=""):
+    """Instalación de un solo archivo: descarga el repo en zip y lo descomprime.
+    v1.4: dest_str = carpeta elegida por el usuario (vacía = junto al exe); sistema,
+    cerebros y vaults viven todos dentro de esa carpeta. Se recuerda en gestor.json.
     Progreso en START_LOGS['setup'] (mismo mecanismo de polling que el arranque)."""
     if COMPOSE_FILE.exists():
         return {"error": "El proyecto ya está descargado"}
+    target = Path(dest_str.strip()) if (dest_str or "").strip() else None
+    if target is not None:
+        if not target.is_absolute():
+            return {"error": "La ruta debe ser absoluta (ej: D:\\cerebros)"}
+        try:
+            target.mkdir(parents=True, exist_ok=True)  # valida permisos ahora, no en el thread
+        except Exception as e:
+            return {"error": f"No puedo escribir en {target}: {e}"}
     if START_LOGS.get("setup", {}).get("done") is False:
         return {"error": "Ya se está descargando"}
     with LOG_LOCK:
@@ -211,7 +244,7 @@ def download_project():
     def worker():
         lines, ok = [], False
         try:
-            dest = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE_DIR
+            dest = target or (Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE_DIR)
             req = urllib.request.Request(REPO_ZIP_URL, headers={"User-Agent": "GestorDeCerebros"})
             with urllib.request.urlopen(req, timeout=60) as r:
                 total = int(r.headers.get("Content-Length") or 0)
@@ -238,10 +271,16 @@ def download_project():
             # v1.3: carpeta con nombre profesional — el zip trae "Cerebro-Virtual-main"
             extracted = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
             if extracted and extracted.name != "cerebro_virtual":
-                target = dest / "cerebro_virtual"
-                if not target.exists():
-                    extracted.rename(target)
+                renamed = dest / "cerebro_virtual"  # v1.4: 'renamed' — 'target' ya es la carpeta elegida por el usuario
+                if not renamed.exists():
+                    extracted.rename(renamed)
             zpath.unlink()
+            # v1.4: persistir la carpeta elegida ANTES de _refresh_base — _find_base solo mira
+            # hijos/padres del exe, así que sin gestor.json un proyecto en otro disco quedaría huérfano
+            if target is not None:
+                final = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
+                if final:
+                    _config_file().write_text(json.dumps({"base": str(final)}), encoding="utf-8")
             _refresh_base()
             ok = COMPOSE_FILE.exists()
             lines.append(f"Proyecto listo en: {BASE_DIR}" if ok else "Error: proyecto no encontrado tras descomprimir")
@@ -249,6 +288,77 @@ def download_project():
             lines.append(f"Error: {e}")
         with LOG_LOCK:
             b = START_LOGS.get("setup")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
+def install_deps():
+    """v1.4: botón 'Instalar dependencias' — instala de golpe lo que falte (docker/git/python):
+    winget en Windows (salta el UAC, el usuario acepta), apt+sudo en Linux (contraseña en la terminal).
+    Si winget no existe, abre las páginas de descarga. Progreso en START_LOGS['deps']."""
+    if START_LOGS.get("deps", {}).get("done") is False:
+        return {"error": "Ya se está instalando"}
+    with LOG_LOCK:
+        START_LOGS["deps"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        lines, ok = [], True
+        try:
+            _refresh_path()
+            probes = {"docker": ("docker", _KNOWN["docker"]),
+                      "git": ("git", _KNOWN["git"]),
+                      "python": ("python", _KNOWN["python"])}
+            missing = [k for k in ("docker", "git", "python") if not _probe(*probes[k])[0]]
+            if missing:
+                lines.append(f"No detectado: {', '.join(missing)}")
+            if not missing:
+                lines.append("Todo ya está instalado — nada que hacer")
+            elif IS_WIN:
+                rc, _, _ = run(["winget", "--version"], timeout=15)
+                if rc != 0:
+                    lines.append("winget no disponible — abriendo páginas de descarga")
+                    for k in missing:
+                        webbrowser.open(_DL_URLS[k])
+                else:
+                    for k in missing:
+                        lines.append(f"Instalando {_WINGET_PKGS[k]} — acepta el aviso de Windows si aparece")
+                        p = subprocess.Popen(["winget", "install", "-e", "--id", _WINGET_PKGS[k], "--silent",
+                                              "--accept-source-agreements", "--accept-package-agreements"],
+                                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             text=True, errors="replace", creationflags=NO_WINDOW)
+                        for ln in p.stdout:
+                            lines.append(ln.rstrip())
+                        if p.wait() != 0:
+                            ok = False
+                            lines.append(f"Fallo instalando {k} — instala a mano: {_DL_URLS[k]}")
+                    if "docker" in missing:
+                        dd = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
+                        if dd.exists():
+                            subprocess.Popen([str(dd)], creationflags=NO_WINDOW)
+                            lines.append("Arrancando Docker Desktop — acepta sus términos la primera vez")
+            else:
+                pkgs = [_APT_PKGS[k] for k in missing]
+                lines.append(f"sudo apt-get install -y {' '.join(pkgs)}")
+                # ponytail: sudo pide la contraseña por /dev/tty — el binario debe lanzarse desde terminal
+                p = subprocess.Popen(["sudo", "apt-get", "install", "-y", *pkgs],
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, errors="replace")
+                for ln in p.stdout:
+                    lines.append(ln.rstrip())
+                if p.wait() != 0:
+                    ok = False
+                    lines.append("apt falló — ¿contraseña sudo? Ejecuta el comando de arriba en una terminal")
+                else:
+                    lines.append("Consejo: añade tu usuario al grupo docker (sudo usermod -aG docker $USER) y reinicia sesión")
+        except Exception as e:
+            ok = False
+            lines.append(f"Error: {e}")
+        with LOG_LOCK:
+            b = START_LOGS.get("deps")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -358,21 +468,58 @@ def _latest_gestor():
 _GESTOR_CHECK = {"at": 0.0, "latest": None}
 
 
+def _refresh_path():
+    """v1.4: el exe congela el PATH al arrancar; instalar Docker/Git actualiza el registro
+    pero no este proceso → 'instalado pero Faltante' hasta reiniciar. Releer del registro."""
+    if not IS_WIN:
+        return
+    try:
+        import winreg
+        parts = []
+        for root, sub in ((winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                          (winreg.HKEY_CURRENT_USER, r"Environment")):
+            try:
+                with winreg.OpenKey(root, sub) as k:
+                    parts.append(os.path.expandvars(winreg.QueryValueEx(k, "Path")[0]))
+            except OSError:
+                pass
+        if parts:
+            os.environ["PATH"] = ";".join(parts) + ";" + os.environ.get("PATH", "")
+    except Exception:
+        pass
+
+
+_KNOWN = {  # rutas absolutas cuando el PATH (aún refrescado) no trae el bin
+    "docker": [r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"],
+    "git": [r"C:\Program Files\Git\cmd\git.exe", r"C:\Program Files (x86)\Git\cmd\git.exe"],
+    "python": [r"C:\Windows\py.exe", "py", "python3"],
+}
+
+
+def _probe(cmd, extra_paths=()):
+    """(ok, version, exe) — cmd vía PATH refrescado, luego rutas conocidas.
+    ponytail: 15s — el primer arranque tras instalar (Defender escanea el exe) puede pasar de 5s."""
+    for c in [cmd, *extra_paths]:
+        rc, out, _ = run([c, "--version"], timeout=15)
+        if rc == 0:
+            return True, out.strip(), c
+    return False, "", cmd
+
+
 def check_requirements():
     general, per = [], []
-    rc, out, _ = run(["docker", "--version"], timeout=5)
-    general.append({"name": "Docker", "ok": rc == 0, "version": out.strip(), "url": "https://docs.docker.com/engine/install/"})
+    _refresh_path()
+    ok, ver, dexe = _probe("docker", _KNOWN["docker"])
+    general.append({"name": "Docker", "ok": ok, "version": ver, "url": _DL_URLS["docker"]})
     docker_up = False
-    if rc == 0:
-        rc2, _, _ = run(["docker", "info"], timeout=10)
+    if ok:
+        rc2, _, _ = run([dexe, "info"], timeout=10)
         docker_up = rc2 == 0
         general.append({"name": "Docker corriendo", "ok": rc2 == 0, "version": "", "url": ""})
-    rc, out, _ = run(["git", "--version"], timeout=5)
-    general.append({"name": "Git", "ok": rc == 0, "version": out.strip(), "url": "https://git-scm.com/downloads"})
-    rc, out, _ = run(["python", "--version"], timeout=5)
-    if rc != 0: rc, out, _ = run(["py", "--version"], timeout=5)
-    if rc != 0: rc, out, _ = run(["python3", "--version"], timeout=5)  # v1.3: Linux
-    general.append({"name": "Python", "ok": rc == 0, "version": out.strip().replace("Python ", ""), "url": "https://www.python.org/downloads/"})
+    ok, ver, _ = _probe("git", _KNOWN["git"])
+    general.append({"name": "Git", "ok": ok, "version": ver, "url": _DL_URLS["git"]})
+    ok, ver, _ = _probe("python", _KNOWN["python"])
+    general.append({"name": "Python", "ok": ok, "version": ver.replace("Python ", ""), "url": _DL_URLS["python"]})
     ram = _ram_gb()
     general.append({"name": "RAM (8GB)", "ok": ram >= 8 or ram == 0, "version": f"{ram:.1f}GB" if ram else "", "url": ""})
     try:
@@ -454,7 +601,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self._json({"error": "Solo letras, números, guiones y guiones bajos"}, 400); return
             self._json(instance_create(name)); return
         if self.path == "/api/download-project":
-            self._json(download_project()); return
+            self._json(download_project(body.get("dest", ""))); return
+        if self.path == "/api/install-deps":
+            self._json(install_deps()); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
