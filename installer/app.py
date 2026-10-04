@@ -367,6 +367,149 @@ def install_deps():
     return {"success": True}
 
 
+def _rewrite_envs():
+    """v1.4: si el usuario MOVIÓ la carpeta del sistema y la reasigna, los .env siguen con
+    rutas absolutas viejas (VAULT_DIR, ENV_FILE...). Regenerarlas hacia la base actual."""
+    if not INSTANCES_DIR.exists():
+        return
+    base_fwd = str(BASE_DIR).replace("\\", "/")
+    for d in INSTANCES_DIR.iterdir():
+        env = d / ".env"
+        if not env.exists():
+            continue
+        if read_env(d.name).get("VAULT_DIR") == f"{base_fwd}/instances/{d.name}/vault":
+            continue  # ya apunta aquí
+        keep = [ln for ln in env.read_text(encoding="utf-8", errors="ignore").splitlines()
+                if not ln.startswith(("VAULT_HOST_PATH=", "VAULT_DIR=", "ENV_FILE=", "AGENT_CONFIG_DIR="))]
+        keep += [f"VAULT_HOST_PATH={base_fwd}/instances/{d.name}/vault",
+                 f"VAULT_DIR={base_fwd}/instances/{d.name}/vault",
+                 f"ENV_FILE={base_fwd}/instances/{d.name}/.env",
+                 f"AGENT_CONFIG_DIR={base_fwd}/instances/{d.name}"]
+        env.write_text("\n".join(keep) + "\n", encoding="utf-8")
+
+
+def set_base(path_str):
+    """v1.4: apuntar el gestor a un sistema YA instalado — un exe nuevo en otra carpeta
+    no lo encuentra solo. Vale para el proyecto directamente o la raíz que lo contiene."""
+    p = Path((path_str or "").strip())
+    if not str(p) or not p.is_absolute():
+        return {"error": "La ruta debe ser absoluta (ej: D:\\Gestor de Cerebros)"}
+    if not p.is_dir():
+        return {"error": f"La carpeta no existe: {p}"}
+    base = p if (p / "docker-compose.yml").exists() else next(
+        (c for c in p.iterdir() if c.is_dir() and (c / "docker-compose.yml").exists()), None)
+    if base is None:
+        return {"error": f"No encuentro el sistema en {p} (docker-compose.yml ni ahí ni un nivel abajo)"}
+    try:
+        _config_file().write_text(json.dumps({"base": str(base)}), encoding="utf-8")
+    except Exception as e:
+        return {"error": f"No puedo guardar el ajuste: {e}"}
+    _refresh_base()
+    _rewrite_envs()
+    return {"success": True, "base": str(BASE_DIR), "instances": len(list_instances())}
+
+
+def _dd_settings():
+    return Path(os.environ.get("APPDATA", "")) / "Docker" / "settings-store.json"
+
+
+def docker_data_dir():
+    """Carpeta actual del disco de datos de Docker Desktop (default = AppData\\Local\\Docker\\wsl\\disk)."""
+    d = None
+    try:
+        d = json.loads(_dd_settings().read_text(encoding="utf-8")).get("DataFolder")
+    except Exception:
+        pass
+    return Path(d) if d else Path(os.environ.get("LOCALAPPDATA", "")) / "Docker" / "wsl" / "disk"
+
+
+def move_docker_data(dest_str=""):
+    """v1.4: mover el disco de datos de Docker Desktop (imágenes/contenedores, TODO el peso) a
+    <root>/docker-data. Cambia DataFolder en settings-store.json y Docker mueve el vhdx él solo
+    al arrancar. Apaga Docker durante el proceso; revierte si no responde. Log en START_LOGS['dockermove']."""
+    if not IS_WIN:
+        return {"error": "Solo Docker Desktop en Windows — en Linux docker ya usa /var/lib/docker"}
+    if START_LOGS.get("dockermove", {}).get("done") is False:
+        return {"error": "Ya se está moviendo"}
+    root = Path((dest_str or "").strip()) if (dest_str or "").strip() else BASE_DIR.parent
+    target = root / "docker-data"
+    with LOG_LOCK:
+        START_LOGS["dockermove"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        lines, ok = [], False
+        try:
+            settings = _dd_settings()
+            if not settings.exists():
+                raise RuntimeError("No encuentro Docker Desktop (settings-store.json) — ¿está instalado?")
+            cur = docker_data_dir()
+            if cur.resolve() == target.resolve():
+                lines.append(f"Los datos de Docker ya están en {target} — nada que hacer")
+                ok = True
+            elif target.exists() and any(target.glob("*.vhdx")):
+                # v1.4: guard DESPUÉS de la comparación — tras un movimiento correcto, target SÍ tiene el vhdx
+                raise RuntimeError(f"{target} ya contiene un disco de Docker — borra esa carpeta o elige otra raíz")
+            else:
+                vhdx = cur / "docker_data.vhdx"
+                size = vhdx.stat().st_size if vhdx.exists() else 0
+                root.mkdir(parents=True, exist_ok=True)  # v1.4: la raíz puede no existir aún — disk_usage peta si no
+                free = shutil.disk_usage(root).free
+                if size and free < size * 1.05:
+                    raise RuntimeError(f"Espacio insuficiente: el disco de Docker pesa {size/1e9:.0f}GB y en {root} solo hay {free/1e9:.0f}GB libres")
+                target.mkdir(parents=True, exist_ok=True)
+                lines.append("Parando Docker Desktop (tus cerebros se detienen un rato)...")
+                for proc in ("Docker Desktop.exe", "com.docker.backend.exe", "com.docker.build.exe"):
+                    run(["taskkill", "/IM", proc, "/F"], timeout=30)
+                run(["wsl", "--terminate", "docker-desktop"], timeout=30)
+                time.sleep(3)
+                try:
+                    data = json.loads(settings.read_text(encoding="utf-8"))
+                except Exception as e:
+                    raise RuntimeError(f"No puedo leer {settings}: {e}")
+                old = data.get("DataFolder")
+                data["DataFolder"] = str(target)
+                settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                lines.append(f"Ajuste guardado: DataFolder = {target}")
+                lines.append("Arrancando Docker Desktop — moverá el disco aquí (con muchos GB puede tardar media hora, no cierres esto)...")
+                dd = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
+                if dd.exists():
+                    subprocess.Popen([str(dd)], creationflags=NO_WINDOW)
+                else:
+                    lines.append("No encuentro Docker Desktop.exe — arráncalo tú; el ajuste ya está puesto")
+                t0, up = time.time(), False
+                while time.time() - t0 < 2700:
+                    rc, _, _ = run(["docker", "info"], timeout=15)
+                    if rc == 0:
+                        up = True
+                        break
+                    if int(time.time() - t0) % 60 < 16:
+                        lines.append(f"Esperando al motor de Docker... {int((time.time() - t0) / 60)} min (mueve el disco mientras)")
+                    time.sleep(15)
+                if up:
+                    ok = True
+                    if any(target.glob("*.vhdx")):
+                        lines.append(f"Hecho: los datos de Docker ahora viven en {target}")
+                    else:
+                        lines.append("Docker respondió pero no veo el disco en la carpeta destino — revisa Ajustes de Docker")
+                else:
+                    if old is None:
+                        data.pop("DataFolder", None)
+                    else:
+                        data["DataFolder"] = old
+                    settings.write_text(json.dumps(data, indent=2), encoding="utf-8")
+                    raise RuntimeError("Docker no respondió en 45 min — ajuste revertido, arranca Docker Desktop a mano")
+        except Exception as e:
+            lines.append(f"Error: {e}")
+        with LOG_LOCK:
+            b = START_LOGS.get("dockermove")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
 def compose_cmd(name, *args):
     vals = read_env(name)
     project = vals.get("COMPOSE_PROJECT_NAME", name)
@@ -532,7 +675,10 @@ def check_requirements():
         have = {"searxng/searxng", "ollama/ollama", "diegosouzapw/omniroute"} & set(out.split())
         per.append({"name": "Imágenes base", "ok": len(have) == 3,
                     "version": "ya descargadas" if len(have) == 3 else "se descargan (~3GB) en el primer inicio", "url": ""})
-    out = {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists()}
+    out = {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists(),
+           "base": str(BASE_DIR), "is_win": IS_WIN,
+           # v1.4: ¿el disco de datos de Docker ya vive bajo la carpeta del sistema?
+           "docker_data_here": (not IS_WIN) or docker_data_dir().resolve().is_relative_to(BASE_DIR.parent.resolve())}
     latest = _latest_gestor()
     if latest and latest != GESTOR_VERSION:
         out["gestor_update"] = {"latest": latest, "url": "https://github.com/karmaescopeta/Cerebro-Virtual/releases/latest"}
@@ -604,6 +750,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(download_project(body.get("dest", ""))); return
         if self.path == "/api/install-deps":
             self._json(install_deps()); return
+        if self.path == "/api/set-base":
+            self._json(set_base(body.get("path", ""))); return
+        if self.path == "/api/move-docker-data":
+            self._json(move_docker_data(body.get("dest", ""))); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
