@@ -1,14 +1,16 @@
 import React from 'react'
+import mdTheme, { slugify } from '../../mdTheme'
 
 // ponytail: parser Markdown → React elements. Sin deps externas. Obsidian Deep theme.
 // Soporta: h1-h4, bold, italic, code, code blocks, tablas, listas (ul/ol), wikilinks, links, blockquotes, hr.
+// Estilos en mdTheme.js. compact=true = escala burbuja de chat; false = escala de lectura (documentos).
 
-function MarkdownViewer({ content, style }) {
+function MarkdownViewer({ content, style, compact = false }) {
   if (!content) return null
-  return <div style={{ ...style }}>{parseMarkdown(content)}</div>
+  return <div style={{ ...style }}>{parseMarkdown(content, compact)}</div>
 }
 
-function parseMarkdown(md) {
+function parseMarkdown(md, compact) {
   const lines = md.split('\n')
   const elements = []
   let i = 0
@@ -28,13 +30,9 @@ function parseMarkdown(md) {
       }
       i++ // skip closing ```
       elements.push(
-        <pre key={key++} style={{
-          background: 'var(--color-bg)', borderRadius: 'var(--radius-sm)',
-          padding: '12px 16px', overflowX: 'auto', margin: '10px 0',
-          border: '1px solid var(--color-surface-high)',
-        }}>
-          {lang && <div style={{ fontSize: 11, color: 'var(--color-text-tertiary)', marginBottom: 6, fontFamily: 'var(--font-mono)' }}>{lang}</div>}
-          <code style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--color-text-secondary)', lineHeight: 1.5 }}>{codeLines.join('\n')}</code>
+        <pre key={key++} style={mdTheme.codeBlock.pre(compact)}>
+          {lang && <div style={mdTheme.codeBlock.lang(compact)}>{lang}</div>}
+          <code style={mdTheme.codeBlock.code(compact)}>{codeLines.join('\n')}</code>
         </pre>
       )
       continue
@@ -47,25 +45,25 @@ function parseMarkdown(md) {
         tableLines.push(lines[i])
         i++
       }
-      elements.push(renderTable(tableLines, key++))
+      elements.push(renderTable(tableLines, key++, compact))
       continue
     }
 
-    // Headings
+    // Headings — id slug en h1-h3 (solo documento) para el índice de DocReader
     if (line.startsWith('#### ')) {
-      elements.push(<h4 key={key++} style={{ margin: '10px 0 4px', color: 'var(--color-text-primary)', fontSize: 14, fontWeight: 600 }}>{renderInline(line.slice(5))}</h4>)
+      elements.push(<h4 key={key++} style={mdTheme.h4(compact)}>{renderInline(line.slice(5), compact)}</h4>)
       i++; continue
     }
     if (line.startsWith('### ')) {
-      elements.push(<h3 key={key++} style={{ margin: '14px 0 6px', color: 'var(--color-text-primary)', fontSize: 16, fontWeight: 600 }}>{renderInline(line.slice(4))}</h3>)
+      elements.push(<h3 key={key++} id={compact ? undefined : slugify(line.slice(4))} style={mdTheme.h3(compact)}>{renderInline(line.slice(4), compact)}</h3>)
       i++; continue
     }
     if (line.startsWith('## ')) {
-      elements.push(<h2 key={key++} style={{ margin: '18px 0 8px', color: 'var(--color-text-primary)', fontSize: 18, fontWeight: 700 }}>{renderInline(line.slice(3))}</h2>)
+      elements.push(<h2 key={key++} id={compact ? undefined : slugify(line.slice(3))} style={mdTheme.h2(compact)}>{renderInline(line.slice(3), compact)}</h2>)
       i++; continue
     }
     if (line.startsWith('# ')) {
-      elements.push(<h1 key={key++} style={{ margin: '20px 0 10px', color: 'var(--color-primary)', fontSize: 22, fontWeight: 700 }}>{renderInline(line.slice(2))}</h1>)
+      elements.push(<h1 key={key++} id={compact ? undefined : slugify(line.slice(2))} style={mdTheme.h1(compact)}>{renderInline(line.slice(2), compact)}</h1>)
       i++; continue
     }
 
@@ -77,13 +75,8 @@ function parseMarkdown(md) {
         i++
       }
       elements.push(
-        <blockquote key={key++} style={{
-          borderLeft: '3px solid var(--color-primary)', paddingLeft: '12px',
-          margin: '10px 0', color: 'var(--color-text-secondary)', fontSize: 13,
-          background: 'rgba(173,198,255,0.04)', borderRadius: '0 var(--radius-sm) var(--radius-sm) 0',
-          padding: '8px 12px',
-        }}>
-          {quoteLines.map((l, j) => <div key={j}>{renderInline(l)}</div>)}
+        <blockquote key={key++} style={mdTheme.blockquote(compact)}>
+          {quoteLines.map((l, j) => <div key={j}>{renderInline(l, compact)}</div>)}
         </blockquote>
       )
       continue
@@ -91,7 +84,7 @@ function parseMarkdown(md) {
 
     // Horizontal rule
     if (line.trim() === '---' || line.trim() === '***') {
-      elements.push(<hr key={key++} style={{ border: 'none', borderTop: '1px solid var(--color-surface-high)', margin: '16px 0' }} />)
+      elements.push(<hr key={key++} style={mdTheme.hr(compact)} />)
       i++; continue
     }
 
@@ -104,7 +97,7 @@ function parseMarkdown(md) {
         items.push({ indent, text })
         i++
       }
-      elements.push(renderList(items, 'ul', key++))
+      elements.push(renderList(items, 'ul', key++, compact))
       continue
     }
 
@@ -117,7 +110,7 @@ function parseMarkdown(md) {
         items.push({ indent, text })
         i++
       }
-      elements.push(renderList(items, 'ol', key++))
+      elements.push(renderList(items, 'ol', key++, compact))
       continue
     }
 
@@ -128,44 +121,35 @@ function parseMarkdown(md) {
     }
 
     // Paragraph
-    elements.push(<p key={key++} style={{ margin: '6px 0', color: 'var(--color-text-secondary)', fontSize: 13.5, lineHeight: 1.7 }}>{renderInline(line)}</p>)
+    elements.push(<p key={key++} style={mdTheme.p(compact)}>{renderInline(line, compact)}</p>)
     i++
   }
 
   return elements
 }
 
-function renderTable(tableLines, key) {
+function renderTable(tableLines, key, compact) {
   // ponytail: parse GFM table. First row = header, second = separator, rest = data.
   const parseRow = (line) => line.split('|').map(c => c.trim()).filter((_, idx, arr) => idx !== 0 && idx !== arr.length - 1)
   const headers = parseRow(tableLines[0])
   const rows = tableLines.slice(2).map(parseRow)
+  const t = mdTheme.table
 
   return (
-    <div key={key} style={{ overflowX: 'auto', margin: '10px 0' }}>
-      <table style={{
-        width: '100%', borderCollapse: 'collapse', fontSize: 13,
-        border: '1px solid var(--color-surface-high)', borderRadius: 'var(--radius-sm)', overflow: 'hidden',
-      }}>
+    <div key={key} style={t.wrap(compact)}>
+      <table style={t.table(compact)}>
         <thead>
           <tr>
             {headers.map((h, j) => (
-              <th key={j} style={{
-                padding: '8px 12px', textAlign: 'left', fontWeight: 600,
-                color: 'var(--color-text-primary)', background: 'var(--color-surface-high)',
-                borderBottom: '1px solid var(--color-surface-high)',
-              }}>{renderInline(h)}</th>
+              <th key={j} style={t.th(compact)}>{renderInline(h, compact)}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, ri) => (
-            <tr key={ri} style={{ background: ri % 2 === 0 ? 'transparent' : 'rgba(255,255,255,0.02)' }}>
+            <tr key={ri} style={{ background: ri % 2 === 0 ? 'transparent' : t.rowAlt }}>
               {headers.map((_, ci) => (
-                <td key={ci} style={{
-                  padding: '6px 12px', color: 'var(--color-text-secondary)',
-                  borderBottom: '1px solid var(--color-surface-high)',
-                }}>{renderInline(row[ci] || '')}</td>
+                <td key={ci} style={t.td(compact)}>{renderInline(row[ci] || '', compact)}</td>
               ))}
             </tr>
           ))}
@@ -175,7 +159,7 @@ function renderTable(tableLines, key) {
   )
 }
 
-function renderList(items, type, key) {
+function renderList(items, type, key, compact) {
   // ponytail: flatten nested lists by indent level
   const root = { children: [] }
   const stack = [{ node: root, indent: -1 }]
@@ -191,21 +175,21 @@ function renderList(items, type, key) {
   }
 
   const renderNodes = (nodes) => nodes.map((n, j) => (
-    <li key={j} style={{ margin: '3px 0', color: 'var(--color-text-secondary)', fontSize: 13.5, lineHeight: 1.6 }}>
-      {renderInline(n.text)}
+    <li key={j} style={mdTheme.li(compact)}>
+      {renderInline(n.text, compact)}
       {n.children.length > 0 && (
-        type === 'ul' ? <ul style={{ margin: '4px 0 4px 16px', listStyle: 'none' }}>{renderNodes(n.children)}</ul>
-                     : <ol style={{ margin: '4px 0 4px 16px' }}>{renderNodes(n.children)}</ol>
+        type === 'ul' ? <ul style={mdTheme.nested(compact)}>{renderNodes(n.children)}</ul>
+                     : <ol style={mdTheme.nested(compact)}>{renderNodes(n.children)}</ol>
       )}
     </li>
   ))
 
   return type === 'ul'
-    ? <ul key={key} style={{ margin: '6px 0', paddingLeft: '20px', listStyle: 'disc' }}>{renderNodes(root.children)}</ul>
-    : <ol key={key} style={{ margin: '6px 0', paddingLeft: '20px' }}>{renderNodes(root.children)}</ol>
+    ? <ul key={key} style={mdTheme.ul(compact)}>{renderNodes(root.children)}</ul>
+    : <ol key={key} style={mdTheme.ol(compact)}>{renderNodes(root.children)}</ol>
 }
 
-function renderInline(text) {
+function renderInline(text, compact) {
   if (!text) return ''
   const parts = []
   let remaining = text
@@ -230,15 +214,15 @@ function renderInline(text) {
     if (m.index > 0) parts.push(remaining.slice(0, m.index))
 
     if (wl && m === wl) {
-      parts.push(<span key={key++} style={{ color: 'var(--color-primary)', cursor: 'pointer', textDecoration: 'underline' }}>{m[1]}</span>)
+      parts.push(<span key={key++} style={mdTheme.wikilink(compact)}>{m[1]}</span>)
     } else if (bold && m === bold) {
-      parts.push(<strong key={key++} style={{ fontWeight: 600, color: 'var(--color-text-primary)' }}>{m[1]}</strong>)
+      parts.push(<strong key={key++} style={mdTheme.bold(compact)}>{m[1]}</strong>)
     } else if (italic && m === italic) {
-      parts.push(<em key={key++}>{m[1]}</em>)
+      parts.push(<em key={key++} style={mdTheme.italic(compact)}>{m[1]}</em>)
     } else if (code && m === code) {
-      parts.push(<code key={key++} style={{ background: 'var(--color-surface-high)', padding: '2px 5px', borderRadius: '3px', fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--color-primary)' }}>{m[1]}</code>)
+      parts.push(<code key={key++} style={mdTheme.code(compact)}>{m[1]}</code>)
     } else if (link && m === link) {
-      parts.push(<a key={key++} href={m[2]} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>{m[1]}</a>)
+      parts.push(<a key={key++} href={m[2]} target="_blank" rel="noopener noreferrer" style={mdTheme.link(compact)}>{m[1]}</a>)
     }
 
     remaining = remaining.slice(m.index + m[0].length)

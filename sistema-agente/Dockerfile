@@ -8,18 +8,20 @@ RUN apt-get update && apt-get install -y \
     curl \
     build-essential \
     libffi-dev \
-    python3-bcrypt \
     && rm -rf /var/lib/apt/lists/*
 
-# Configurar HERMES_HOME y PATH (instalador pone hermes en /usr/local/lib)
+# ponytail: instalador pm (2026.9+) — shim en /root/.local/bin, runtime en /app/hermes-home
+# (sin venv clásico: el agente vive en installs/<hash>/environments/*/venv)
 ENV HERMES_HOME=/app/hermes-home
-ENV PATH="/usr/local/lib/hermes-agent/venv/bin:${HERMES_HOME}/bin:${PATH}"
+ENV PATH="/root/.local/bin:${PATH}"
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --skip-browser
 
-# Ejecutar el instalador oficial
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-venv --skip-setup
+# bcrypt+pyyaml para la auth del dashboard: el venv pm no trae pip → pip --python
+RUN V=$(find /app/hermes-home/installs -name pyvenv.cfg | grep environments | head -1 | xargs -r dirname) \
+    && /app/hermes-home/tools/python-*/bin/python3 -m pip --python "$V/bin/python" install bcrypt pyyaml || true
 
-# Instalar pyyaml y bcrypt (por si acaso)
-RUN pip install pyyaml bcrypt || true
+# pyyaml+bcrypt en el python del sistema (generate_config.py del entrypoint corre sin venv clásico)
+RUN pip install --no-cache-dir pyyaml bcrypt || true
 
 # Crear directorios necesarios
 RUN mkdir -p /app/config /app/vault /app/data

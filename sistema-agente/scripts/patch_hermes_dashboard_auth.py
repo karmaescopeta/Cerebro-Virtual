@@ -9,7 +9,12 @@ provider supports password login.
 """
 from pathlib import Path
 
-TARGET = Path("/usr/local/lib/hermes-agent/hermes_cli/dashboard_auth/middleware.py")
+# ponytail: layout nuevo (instalador pm) primero, FHS viejo como fallback
+_CANDIDATES = [
+    Path("/app/hermes-home/hermes-agent/hermes_cli/dashboard_auth/middleware.py"),
+    Path("/usr/local/lib/hermes-agent/hermes_cli/dashboard_auth/middleware.py"),
+]
+TARGET = next((p for p in _CANDIDATES if p.exists()), _CANDIDATES[0])
 MARKER = "# CEREBRO_PATCH_PASSWORD_PROVIDER_NO_AUTO_SSO"
 
 

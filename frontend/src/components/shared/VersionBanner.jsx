@@ -48,8 +48,8 @@ function VersionBanner() {
 
   return (
     <div style={{
-      background: 'rgba(78,222,163,0.1)',
-      borderBottom: '1px solid rgba(78,222,163,0.2)',
+      background: 'color-mix(in srgb, var(--color-success) 10%, transparent)',
+      borderBottom: '1px solid color-mix(in srgb, var(--color-success) 20%, transparent)',
       padding: '8px 16px',
       display: 'flex',
       alignItems: 'center',

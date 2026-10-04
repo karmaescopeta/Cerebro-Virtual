@@ -1,18 +1,46 @@
 import React, { useState, useEffect } from 'react'
 
-const DEFAULT_MODELS = {
-  'chat-default': 'combo/cerebro-default',
-  'chat-smart': 'combo/cerebro-smart',
-  'cerebro': 'combo/cerebro-cerebro',
-  'investigador': 'combo/cerebro-smart',
-  'graphify': 'combo/cerebro-graphify',
-}
-const DEFAULT_NAMES = {
-  'chat-default': 'Chat Default',
-  'chat-smart': 'Chat Inteligente',
-  'cerebro': 'Cerebro',
-  'investigador': 'Investigador',
-  'graphify': 'Graphify (Neuronas)',
+// ponytail: una lista alimenta el modal info y el autocomplete del terminal — solo lo básico
+const OLLAMA_COMMANDS = [
+  { short: 'list', arg: '', desc: 'Lista los modelos instalados.' },
+  { short: 'ps', arg: '', desc: 'Muestra los modelos ejecutándose ahora mismo.' },
+  { short: 'stop', arg: '<modelo>', desc: 'Detiene un modelo en ejecución.' },
+  { short: 'pull', arg: '<modelo>', desc: 'Descarga un modelo nuevo desde la librería de Ollama.' },
+  { short: 'run', arg: '<modelo>', desc: 'Inicia una conversación con un modelo concreto.' },
+]
+
+// ponytail: header de sección repetido 3 veces — un solo componente; info modal en vez de subtítulo
+function SectionHeader({ title, info, children }) {
+  const [showInfo, setShowInfo] = useState(false)
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-5)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+          <h2 className="section-title" style={{ marginBottom: 0 }}>{title}</h2>
+          {info && (
+            <button className="btn-app btn-app-secondary" style={{ padding: '2px 6px', minWidth: 'auto' }} title="¿Qué es esta sección?" onClick={() => setShowInfo(true)}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>info</span>
+            </button>
+          )}
+        </div>
+        {children}
+      </div>
+      {showInfo && (
+        <div className="modelos-summary-overlay" onClick={() => setShowInfo(false)}>
+          <div className="modelos-summary-card" onClick={e => e.stopPropagation()}>
+            <div className="modelos-summary-icon">
+              <span className="material-symbols-outlined" style={{ fontSize: 32, color: 'var(--color-primary)' }}>info</span>
+            </div>
+            <h2 className="modelos-summary-title">{title}</h2>
+            <p className="modelos-summary-text">{info}</p>
+            <button className="btn-app btn-app-primary" style={{ width: '100%', marginTop: 'var(--space-5)' }} onClick={() => setShowInfo(false)}>
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  )
 }
 
 function ModelosView() {
@@ -68,29 +96,45 @@ function ModelosView() {
     )
   }
 
+  // ponytail: reasignar modelos locales tras borrar uno — reutiliza el PUT existente; si hay edición cloud a medio hacer, se guarda junto
+  async function saveLocalAssignments(changes) {
+    const newLocal = { ...editModelsLocal, ...changes }
+    setEditModelsLocal(newLocal)
+    setSaving(true)
+    try {
+      const res = await fetch('/api/profiles/models', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ models: editModels, modelsLocal: newLocal, profileNames: editNames }),
+      })
+      const data = await res.json()
+      if (!data.success) alert('Error: ' + (data.message || 'No se pudo guardar'))
+    } catch { alert('Error de conexión') }
+    setSaving(false)
+    await loadModels()
+  }
+
   return (
     <div style={{ position: 'relative' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-6)' }}>
-        <div>
-          <h1 className="section-title">Modelos</h1>
-          <p className="section-subtitle">Gestiona el modelo de IA asignado a cada perfil del sistema.</p>
-        </div>
-        {!editing ? (
-          <button className="btn-app btn-app-secondary" onClick={() => setEditing(true)}>
-            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>edit</span> Editar
-          </button>
-        ) : (
-          <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
-            <button className="btn-app btn-app-secondary" onClick={() => { setEditModels({ ...DEFAULT_MODELS }); setEditNames({ ...DEFAULT_NAMES }) }}>
-              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>refresh</span> Por defecto
-            </button>
-            <button className="btn-app btn-app-primary" onClick={handleSave} disabled={saving}>
-              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>save</span>
-              {saving ? 'Guardando...' : 'Guardar'}
-            </button>
-          </div>
-        )}
-      </div>
+      <SectionHeader title="Modelos del Sistema" info="Cada tarjeta es un perfil del sistema: el modelo ☁️ es el que usa en la nube y el 🔒 el que usa con el toggle Local del chat. Pulsa Editar para cambiar el nombre visible del perfil.">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+                {!editing ? (
+                  <button className="btn-app btn-app-secondary" onClick={() => setEditing(true)}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>edit</span> Editar
+                  </button>
+                ) : (
+                  <button className="btn-app btn-app-primary" onClick={handleSave} disabled={saving}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 16 }}>save</span>
+                    {saving ? 'Guardando...' : 'Guardar'}
+                  </button>
+                )}
+                {/* ponytail: OmniRoute redirige a rutas absolutas y colisiona /api tras proxy → link directo al puerto publicado */}
+                <a className="btn-app btn-app-secondary" style={{ textDecoration: 'none' }}
+                  href={`http://${location.hostname}:20128`} target="_blank" rel="noopener noreferrer">
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Editar combo
+                </a>
+              </div>
+            </SectionHeader>
 
       <div className="modelos-grid">
         {profiles.map(p => (
@@ -108,16 +152,15 @@ function ModelosView() {
                 <input
                   className="input-app modelos-model-input"
                   value={editModels[p.key] || ''}
-                  onChange={e => setEditModels(s => ({ ...s, [p.key]: e.target.value }))}
-                  placeholder="combo/nombre-cloud"
-                  title="Combo cloud o modelo OpenRouter"
+                  readOnly
+                  title="Combo cloud o modelo OpenRouter — solo editable desde Editar combo"
                 />
                 <input
                   className="input-app modelos-model-input"
                   value={editModelsLocal[p.key] || ''}
                   onChange={e => setEditModelsLocal(s => ({ ...s, [p.key]: e.target.value }))}
-                  placeholder="combo/nombre-local"
-                  title="Combo local (Ollama) para el toggle Local del chat"
+                  placeholder="combo/local-* o modelo ollama"
+                  title="Combo local (Ollama) para el toggle Local del chat — los combos se configuran en OmniRoute"
                 />
               </>
             ) : (
@@ -132,13 +175,6 @@ function ModelosView() {
             )}
           </div>
         ))}
-      </div>
-
-      {/* ponytail: OmniRoute redirige a rutas absolutas y colisiona /api tras proxy → link directo al puerto publicado */}
-      <div style={{ marginTop: 'var(--space-4)', textAlign: 'center' }}>
-        <a href={`http://${location.hostname}:20128`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, color: 'var(--color-primary)' }}>
-          Editar los modelos de cada combo en el panel OmniRoute <span className="material-symbols-outlined" style={{ fontSize: 14, verticalAlign: '-2px' }}>open_in_new</span>
-        </a>
       </div>
 
       {summary !== null && (
@@ -181,28 +217,40 @@ function ModelosView() {
         </div>
       )}
 
+            <LocalAISection profiles={profiles} saveLocalAssignments={saveLocalAssignments} />
+
       <RoutesSection />
-      <LocalAISection />
+
     </div>
+
   )
+
 }
+
+
 
 export default ModelosView
 
+
 // ponytail: IA Local — terminal Ollama WS + tarjetas modelos instalados + rename label
-function LocalAISection() {
+function LocalAISection({ profiles, saveLocalAssignments }) {
   const [status, setStatus] = useState(null)
   const [conns, setConns] = useState(null)
   const [provisioning, setProvisioning] = useState(false)
   const [provMsg, setProvMsg] = useState('')
-  const [editingLabel, setEditingLabel] = useState(null)
-  const [labelDraft, setLabelDraft] = useState('')
-  const [pullModel, setPullModel] = useState('')
-  const [pullLog, setPullLog] = useState('')
+  const [editingLocal, setEditingLocal] = useState(false)
+    const [labelDrafts, setLabelDrafts] = useState({})
+    const [pullModel, setPullModel] = useState('')
+    const [pullLog, setPullLog] = useState('')
   const [pulling, setPulling] = useState(false)
   const [terminalOut, setTerminalOut] = useState('')
-  const [cmdInput, setCmdInput] = useState('')
-  const wsRef = React.useRef(null)
+    const [cmdInput, setCmdInput] = useState('')
+    const [showCmdInfo, setShowCmdInfo] = useState(false)
+    const [deleteTarget, setDeleteTarget] = useState(null)
+    const [deleteChoice, setDeleteChoice] = useState({})
+    const [deleting, setDeleting] = useState(false)
+  const [cmdIdx, setCmdIdx] = useState(0)
+    const wsRef = React.useRef(null)
 
   useEffect(() => { loadStatus(); loadConns() }, [])
 
@@ -236,17 +284,56 @@ function LocalAISection() {
     setProvisioning(false)
   }
 
-  async function saveLabel(model, alias) {
-    try {
-      await fetch('/api/localai/model-label', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, label: alias }),
-      })
-      await loadStatus()
-    } catch { alert('Error al guardar alias') }
-    setEditingLabel(null)
-  }
+  async function saveLabels() {
+      try {
+        for (const m of (status.ollama.models || [])) {
+          const d = labelDrafts[m.name]
+          if (d !== undefined && d !== (m.label || m.name)) {
+            await fetch('/api/localai/model-label', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: m.name, label: d }),
+            })
+          }
+        }
+        await loadStatus()
+      } catch { alert('Error al guardar alias') }
+      setEditingLocal(false)
+      }
+
+      // ponytail: lista de sugerencias del terminal mientras se escribe "/" sin espacio
+      const cmdMatches = (cmdInput.startsWith('/') && !cmdInput.includes(' '))
+      ? OLLAMA_COMMANDS.filter(c => ('/' + c.short).startsWith(cmdInput.toLowerCase()))
+      : []
+      const hlIdx = Math.min(cmdIdx, Math.max(cmdMatches.length - 1, 0))
+
+      function openDelete(m) {
+      setDeleteChoice({})
+      setDeleteTarget(m)
+      }
+
+      async function confirmDelete() {
+      setDeleting(true)
+      try {
+        const res = await fetch('/api/localai/model', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: deleteTarget.name }),
+        })
+        const data = await res.json()
+        if (res.ok && data.success) {
+          const orphans = profiles.filter(p => (p.modelLocal || '') === deleteTarget.name)
+          if (orphans.length) {
+            await saveLocalAssignments(Object.fromEntries(orphans.map(p => [p.key, deleteChoice[p.key] || ''])))
+          }
+          await loadStatus()
+          setDeleteTarget(null)
+        } else {
+          alert('Error: ' + (data.detail || 'No se pudo eliminar'))
+        }
+      } catch { alert('Error de conexión') }
+      setDeleting(false)
+      }
 
   async function startPull() {
     if (!pullModel.trim() || pulling) return
@@ -297,10 +384,25 @@ function LocalAISection() {
 
   return (
     <div style={{ marginTop: 'var(--space-8)' }}>
-      <h2 className="section-title" style={{ marginBottom: 'var(--space-2)' }}>IA Local</h2>
-      <p className="section-subtitle" style={{ marginBottom: 'var(--space-5)' }}>
-        Modelos locales con Ollama. Terminal del contenedor para instalar lo que quieras.
-      </p>
+      <SectionHeader title="Modelos locales" info="Modelos instalados en el contenedor de Ollama. Puedes renombrarlos, borrarlos, descargar nuevos o usar el terminal directo del contenedor.">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <a className="btn-app btn-app-secondary" style={{ textDecoration: 'none' }} href="https://ollama.com" target="_blank" rel="noopener noreferrer">
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>public</span> Ir Ollama
+          </a>
+          {ollamaUp && (!editingLocal ? (
+                <button className="btn-app btn-app-secondary" onClick={() => {
+                  setLabelDrafts(Object.fromEntries((status.ollama.models || []).map(m => [m.name, m.label || m.name])))
+                  setEditingLocal(true)
+                }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>edit</span> Editar
+                </button>
+              ) : (
+                <button className="btn-app btn-app-primary" onClick={saveLabels}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>save</span> Guardar
+                </button>
+              ))}
+        </div>
+      </SectionHeader>
 
       <div className="card" style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-4)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
@@ -309,19 +411,19 @@ function LocalAISection() {
             <a className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto', textDecoration: 'none' }}
               href={`http://${location.hostname}:20128`} target="_blank" rel="noopener noreferrer"
               title="Abrir interfaz web de OmniRoute">
-              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Dashboard
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Configurar proveedores
             </a>
             <button className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto' }} onClick={provision} disabled={provisioning}>
               <span className="material-symbols-outlined" style={{ fontSize: 16 }}>sync</span>
-              {provisioning ? 'Configurando...' : 'Configurar proveedores'}
+              {provisioning ? 'Comprobando...' : 'Comprobar proveedores'}
             </button>
           </div>
         </div>
         {conns ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
-            {conns.connections.length === 0 && <span style={{ fontSize: 13, color: 'var(--color-text-tertiary)' }}>Sin conexiones. Pulsa Configurar proveedores.</span>}
+            {conns.connections.length === 0 && <span style={{ fontSize: 13, color: 'var(--color-text-tertiary)' }}>Sin conexiones. Pulsa Comprobar proveedores.</span>}
             {conns.connections.map(c => (
-              <span key={c.id || c.provider} className="label-caps" style={{ background: 'var(--color-surface-high)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
+              <span key={c.id || c.provider} className="label-caps" style={{ background: 'var(--color-surface-high)', color: 'var(--color-text-primary)', fontWeight: 600, padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)', fontSize: 12 }}>
                 {c.provider}{c.isActive === 0 ? ' (inactiva)' : ''}
               </span>
             ))}
@@ -346,26 +448,22 @@ function LocalAISection() {
               <div key={m.name} className="card modelos-card">
                 <div className="modelos-card-header">
                   <span className="material-symbols-outlined modelos-card-icon">memory</span>
-                  {editingLabel === m.name ? (
-                    <input
-                      className="input-app modelos-name-input"
-                      value={labelDraft}
-                      onChange={e => setLabelDraft(e.target.value)}
-                      onBlur={() => saveLabel(m.name, labelDraft)}
-                      onKeyDown={e => { if (e.key === 'Enter') saveLabel(m.name, labelDraft); if (e.key === 'Escape') setEditingLabel(null) }}
-                      autoFocus
-                    />
-                  ) : (
-                    <span
-                      className="label-caps modelos-card-name"
-                      style={{ cursor: 'pointer' }}
-                      title="Click para renombrar"
-                      onClick={() => { setEditingLabel(m.name); setLabelDraft(m.label || m.name) }}
-                    >
-                      {m.label || m.name}
-                      <span className="material-symbols-outlined" style={{ fontSize: 14, opacity: 0.5, marginLeft: 'var(--space-2)' }}>edit</span>
-                    </span>
-                  )}
+                  {editingLocal ? (
+                                      <div style={{ display: 'flex', gap: 'var(--space-2)', flex: 1, alignItems: 'center' }}>
+                                        <input
+                                          className="input-app modelos-name-input"
+                                          style={{ flex: 1 }}
+                                          value={labelDrafts[m.name] ?? (m.label || m.name)}
+                                          onChange={e => setLabelDrafts(s => ({ ...s, [m.name]: e.target.value }))}
+                                          placeholder={m.name}
+                                        />
+                                        <button className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2)', minWidth: 'auto' }} title="Eliminar modelo del contenedor" onClick={() => openDelete(m)}>
+                                          <span className="material-symbols-outlined" style={{ fontSize: 16, color: 'var(--color-danger)' }}>delete</span>
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <span className="label-caps modelos-card-name">{m.label || m.name}</span>
+                                    )}
                 </div>
                 <div className="modelos-card-model">{m.name}</div>
                 <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginTop: 'var(--space-2)' }}>
@@ -385,10 +483,10 @@ function LocalAISection() {
 
           <div className="card" style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-4)' }}>
             <div className="label-caps" style={{ marginBottom: 'var(--space-3)' }}>Descargar modelo</div>
-            <div style={{ display: 'flex', gap: 'var(--space-3)' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
               <input
                 className="input-app"
-                style={{ flex: 1 }}
+                style={{ flex: 1, minWidth: 0 }}
                 value={pullModel}
                 onChange={e => setPullModel(e.target.value)}
                 placeholder="ej: llama3.2:3b, qwen2.5:7b..."
@@ -407,8 +505,13 @@ function LocalAISection() {
           </div>
 
           <div className="card" style={{ padding: 'var(--space-4)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)' }}>
-              <div className="label-caps">Terminal del contenedor (ollama)</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)' }}>
+                <div className="label-caps">Terminal del contenedor (ollama)</div>
+                <button className="btn-app btn-app-secondary" style={{ padding: '2px 6px', minWidth: 'auto' }} title="Ver comandos disponibles" onClick={() => setShowCmdInfo(true)}>
+                  <span className="material-symbols-outlined" style={{ fontSize: 16 }}>info</span>
+                </button>
+              </div>
               {!wsRef.current && (
                 <button className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto' }} onClick={connectTerminal}>
                   <span className="material-symbols-outlined" style={{ fontSize: 16 }}>terminal</span> Conectar
@@ -420,21 +523,110 @@ function LocalAISection() {
               style={{ background: '#0d1117', color: '#c9d1d9', fontSize: 12, padding: 'var(--space-3)', borderRadius: 'var(--radius-md)', height: 260, overflow: 'auto', whiteSpace: 'pre-wrap', fontFamily: 'monospace' }}
             >{terminalOut || '[desconectado — pulsa Conectar]'}</pre>
             <div style={{ display: 'flex', gap: 'var(--space-3)', marginTop: 'var(--space-3)' }}>
-              <input
-                className="input-app"
-                style={{ flex: 1, fontFamily: 'monospace' }}
-                value={cmdInput}
-                onChange={e => setCmdInput(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter') sendCmd() }}
-                placeholder="ollama pull llama3.2:3b"
-                disabled={!wsRef.current}
-              />
+              <div style={{ flex: 1, position: 'relative', minWidth: 0 }}>
+                <input
+                  className="input-app"
+                  style={{ width: '100%', fontFamily: 'monospace' }}
+                  value={cmdInput}
+                  onChange={e => { setCmdInput(e.target.value); setCmdIdx(0) }}
+                  onKeyDown={e => {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      if (cmdMatches.length) {
+                        setCmdIdx(i => e.key === 'ArrowDown' ? Math.min(i + 1, cmdMatches.length - 1) : Math.max(i - 1, 0))
+                        e.preventDefault()
+                      }
+                      return
+                    }
+                    if (e.key !== 'Enter') return
+                    if (cmdInput.startsWith('/') && !cmdInput.includes(' ')) {
+                      if (cmdMatches.length) setCmdInput('/' + cmdMatches[hlIdx].short + ' ')
+                      e.preventDefault()
+                      return
+                    }
+                    sendCmd()
+                  }}
+                  placeholder="ollama pull llama3.2:3b — escribe / para ver comandos"
+                  disabled={!wsRef.current}
+                />
+                {cmdMatches.length > 0 && (
+                  <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'calc(100% + 4px)', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 'var(--radius-md)', overflow: 'hidden', zIndex: 10, boxShadow: '0 4px 16px rgba(0,0,0,0.15)' }}>
+                    {cmdMatches.map((c, i) => (
+                      <div key={c.short} style={{ padding: 'var(--space-2) var(--space-3)', cursor: 'pointer', display: 'flex', gap: 'var(--space-3)', alignItems: 'baseline', background: i === hlIdx ? 'color-mix(in srgb, var(--color-primary) 12%, transparent)' : 'transparent' }}
+                        onMouseEnter={() => setCmdIdx(i)}
+                        onMouseDown={e => { e.preventDefault(); setCmdInput('/' + c.short + ' ') }}>
+                        <code style={{ fontSize: 13, fontWeight: 600 }}>/{c.short}{c.arg ? ' ' + c.arg : ''}</code>
+                        <span style={{ fontSize: 12, color: 'var(--color-text-tertiary)' }}>{c.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <button className="btn-app btn-app-primary" onClick={sendCmd} disabled={!wsRef.current || !cmdInput.trim()}>
                 Enviar
               </button>
             </div>
           </div>
         </>
+      )}
+
+      {showCmdInfo && (
+        <div className="modelos-summary-overlay" onClick={() => setShowCmdInfo(false)}>
+          <div className="modelos-summary-card" onClick={e => e.stopPropagation()}>
+            <div className="modelos-summary-icon">
+              <span className="material-symbols-outlined" style={{ fontSize: 32, color: 'var(--color-primary)' }}>terminal</span>
+            </div>
+            <h2 className="modelos-summary-title">Comandos del terminal</h2>
+            <div style={{ maxHeight: '50vh', overflow: 'auto', textAlign: 'left' }}>
+              {OLLAMA_COMMANDS.map(c => (
+                <div key={c.short} style={{ marginBottom: 'var(--space-3)' }}>
+                  <code style={{ fontSize: 13, fontWeight: 600 }}>ollama {c.short}{c.arg ? ' ' + c.arg : ''}</code>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-tertiary)', marginTop: 2 }}>{c.desc}</div>
+                </div>
+              ))}
+            </div>
+            <button className="btn-app btn-app-primary" style={{ width: '100%', marginTop: 'var(--space-5)' }} onClick={() => setShowCmdInfo(false)}>
+              Cerrar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="modelos-summary-overlay" onClick={() => { if (!deleting) setDeleteTarget(null) }}>
+          <div className="modelos-summary-card" onClick={e => e.stopPropagation()}>
+            <div className="modelos-summary-icon">
+              <span className="material-symbols-outlined" style={{ fontSize: 32, color: 'var(--color-danger)' }}>dangerous</span>
+            </div>
+            <h2 className="modelos-summary-title">Eliminar modelo</h2>
+            <p className="modelos-summary-text">
+              Se borrará <strong>{deleteTarget.label}</strong> ({deleteTarget.name}{deleteTarget.size ? `, ${deleteTarget.size}` : ''}) del contenedor. Esta acción no se puede deshacer.
+            </p>
+            {profiles.filter(p => (p.modelLocal || '') === deleteTarget.name).length > 0 && (
+              <div style={{ marginTop: 'var(--space-4)', textAlign: 'left' }}>
+                <div className="label-caps" style={{ marginBottom: 'var(--space-2)' }}>Perfiles que lo usan como modelo local</div>
+                {profiles.filter(p => (p.modelLocal || '') === deleteTarget.name).map(p => (
+                  <div key={p.key} className="modelos-summary-row" style={{ marginBottom: 'var(--space-2)' }}>
+                    <span className="label-caps">{p.name}</span>
+                    <select
+                      className="input-app"
+                      style={{ maxWidth: '55%', padding: 'var(--space-1) var(--space-2)', fontSize: 13 }}
+                      value={deleteChoice[p.key] || ''}
+                      onChange={e => setDeleteChoice(s => ({ ...s, [p.key]: e.target.value }))}
+                    >
+                      <option value="">(vacío)</option>
+                      {(status.ollama.models || []).filter(m2 => m2.name !== deleteTarget.name).map(m2 => (
+                        <option key={m2.name} value={m2.name}>{m2.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn-app btn-app-primary" style={{ width: '100%', marginTop: 'var(--space-5)', background: 'var(--color-error)', borderColor: 'var(--color-error)', color: '#fff' }} onClick={confirmDelete} disabled={deleting}>
+              {deleting ? 'Eliminando...' : 'Eliminar'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
@@ -443,9 +635,9 @@ function LocalAISection() {
 // ponytail: Rutas section — labels editable, URLs read-only, copy button
 function RoutesSection() {
   const [routes, setRoutes] = useState([])
-  const [editingLabel, setEditingLabel] = useState(null)
-  const [labelDraft, setLabelDraft] = useState('')
-  const [copied, setCopied] = useState(null)
+  const [editing, setEditing] = useState(false)
+    const [drafts, setDrafts] = useState({})
+    const [copied, setCopied] = useState(null)
 
   useEffect(() => { loadRoutes() }, [])
 
@@ -456,17 +648,22 @@ function RoutesSection() {
     } catch {}
   }
 
-  async function saveLabel(service) {
-    try {
-      await fetch('/api/instances/routes/labels', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ service, label: labelDraft }),
-      })
-      setRoutes(rs => rs.map(r => r.service === service ? { ...r, label: labelDraft || r.service } : r))
-    } catch { alert('Error al guardar etiqueta') }
-    setEditingLabel(null)
-  }
+  async function saveLabels() {
+      try {
+        for (const r of visible) {
+          const d = drafts[r.service]
+          if (d !== undefined && d !== r.label) {
+            await fetch('/api/instances/routes/labels', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ service: r.service, label: d }),
+            })
+          }
+        }
+        await loadRoutes()
+      } catch { alert('Error al guardar etiqueta') }
+      setEditing(false)
+    }
 
   function copyUrl(url, idx) {
     navigator.clipboard.writeText(url).then(() => {
@@ -479,34 +676,38 @@ function RoutesSection() {
 
   return (
     <div style={{ marginTop: 'var(--space-8)' }}>
-      <h2 className="section-title" style={{ marginBottom: 'var(--space-2)' }}>Rutas</h2>
-      <p className="section-subtitle" style={{ marginBottom: 'var(--space-5)' }}>
-        URLs internas de cada contenedor. Cópialas para configurar el túnel de Cloudflare.
-      </p>
+      <SectionHeader title="Rutas" info="URLs internas de cada contenedor. Cópialas para configurar el túnel de Cloudflare; puedes renombrar la etiqueta de cada una.">
+        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
+          <a className="btn-app btn-app-secondary" style={{ textDecoration: 'none' }} href="https://dash.cloudflare.com" target="_blank" rel="noopener noreferrer">
+            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>public</span> Ir Cloudflare
+          </a>
+          {(!editing ? (
+            <button className="btn-app btn-app-secondary" onClick={() => {
+              setDrafts(Object.fromEntries(visible.map(r => [r.service, r.label])))
+              setEditing(true)
+            }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>edit</span> Editar
+            </button>
+          ) : (
+            <button className="btn-app btn-app-primary" onClick={saveLabels}>
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>save</span> Guardar
+            </button>
+          ))}
+        </div>
+      </SectionHeader>
       <div className="modelos-grid">
         {visible.map((r, i) => (
           <div key={r.service} className="card modelos-card">
             <div className="modelos-card-header">
-              {editingLabel === r.service ? (
-                <input
-                  className="input-app modelos-name-input"
-                  value={labelDraft}
-                  onChange={e => setLabelDraft(e.target.value)}
-                  onBlur={() => saveLabel(r.service)}
-                  onKeyDown={e => { if (e.key === 'Enter') saveLabel(r.service); if (e.key === 'Escape') setEditingLabel(null) }}
-                  autoFocus
-                />
-              ) : (
-                <span
-                  className="label-caps modelos-card-name"
-                  style={{ cursor: 'pointer' }}
-                  title="Click para editar etiqueta"
-                  onClick={() => { setEditingLabel(r.service); setLabelDraft(r.label) }}
-                >
-                  {r.label}
-                  <span className="material-symbols-outlined" style={{ fontSize: 14, opacity: 0.5, marginLeft: 'var(--space-2)' }}>edit</span>
-                </span>
-              )}
+              {editing ? (
+                            <input
+                              className="input-app modelos-name-input"
+                              value={drafts[r.service] ?? r.label}
+                              onChange={e => setDrafts(s => ({ ...s, [r.service]: e.target.value }))}
+                            />
+                          ) : (
+                            <span className="label-caps modelos-card-name">{r.label}</span>
+                          )}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', marginTop: 'var(--space-3)' }}>
               <code style={{ flex: 1, fontSize: 13, color: 'var(--color-text-secondary)', background: 'var(--color-surface-high)', padding: 'var(--space-2) var(--space-3)', borderRadius: 'var(--radius-md)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>

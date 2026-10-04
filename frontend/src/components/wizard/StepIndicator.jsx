@@ -1,10 +1,11 @@
 import React from 'react'
 
 const STEPS = [
-  { num: 1, label: 'CONFIGURAR' },
-  { num: 2, label: 'MODELOS' },
-  { num: 3, label: 'CONFIRMAR' },
-  { num: 4, label: 'FINALIZAR' },
+  { num: 1, label: 'Identidad' },
+  { num: 2, label: 'Conexión' },
+  { num: 3, label: 'Proveedores' },
+  { num: 4, label: 'Confirmar' },
+  { num: 5, label: 'Listo' },
 ]
 
 function StepIndicator({ current }) {
@@ -14,7 +15,7 @@ function StepIndicator({ current }) {
         const state = current > s.num ? 'done' : current === s.num ? 'active' : 'pending'
         const itemClass = state === 'pending' ? 'step-item inactive' : 'step-item active'
         return (
-          <div key={s.num} className={itemClass}>
+          <div key={s.num} className={itemClass} aria-current={current === s.num ? 'step' : undefined}>
             <div className={`step-circle ${state}`}>
               {state === 'done' ? (
                 <span className="material-symbols-outlined" style={{ fontSize: 16, fontVariationSettings: "'FILL' 1" }}>

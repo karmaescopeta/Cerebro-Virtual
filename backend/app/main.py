@@ -1,11 +1,11 @@
 from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, HTTPException, File, UploadFile, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 import os
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 import httpx
 
 import subprocess
@@ -258,6 +258,7 @@ async def vault_status():
     return {
         "manifest": manifest,
         "identity": identity,
+        "vault_host_path": os.getenv("VAULT_HOST_PATH", ""),
         "stats": {
             "wiki_pages": wiki_count,
             "raw_files": max(raw_files, 0),
@@ -438,12 +439,15 @@ def _run_graphify(file_abs_path: str, vault_host: str) -> dict | None:
     out_abs = f"/app/vault/{out_subdir}"
     try:
         graphify_model = _get_graphify_model()
+        # ponytail: Graphify via OmniRoute (combo cerebro-graphify vive ahí; openrouter directo no conoce combos)
+        omni_base = os.getenv("OMNIROUTE_BASE_URL", "http://omniroute:20128")
         env_vars = ["-e", f"OPENAI_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY or ''}",
-                    "-e", "OPENAI_BASE_URL=https://openrouter.ai/api/v1",
+                    "-e", f"OPENAI_BASE_URL={omni_base}/v1",
                     "-e", f"GRAPHIFY_OPENAI_MODEL={graphify_model}",
                     "-e", "GRAPHIFY_FORCE=1"]
         result = subprocess.run(
             ["docker", "run", "--rm",
+             "--network", "cerebrovirtual_cerebro-network",  # ponytail: resolver omniroute (combo) — default bridge no tiene DNS
              "-v", f"{vault_host}:/app/vault",
              *env_vars,
              "cerebrovirtual-herramientas:latest",
@@ -504,6 +508,30 @@ def _merge_graph(partial: dict, source_file: str) -> None:
     GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(GRAPH_PATH, "w") as f:
         json.dump(existing, f, ensure_ascii=False)
+    _record_graphed(source_file)
+
+# fase 3 visor-md: meta de qué archivo fue grafiado y cuándo — alimenta el icono "modificado" del visor
+def _resolve_vault_file(name: str):
+    vault = Path(VAULT_PATH)
+    for cand in [vault / name, *vault.glob(f"raw/**/{name}"), *vault.glob(f"outputs/**/{name}")]:
+        if cand.is_file():
+            return cand
+    return None
+
+def _record_graphed(source_file: str) -> None:
+    try:
+        f = _resolve_vault_file(source_file)
+        if not f:
+            return
+        meta_path = GRAPH_PATH.parent / "graph-meta.json"
+        meta = {}
+        if meta_path.exists():
+            try: meta = json.load(open(meta_path))
+            except Exception: meta = {}
+        meta[source_file] = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    except Exception as e:
+        print(f"⚠️ _record_graphed: {e}")
 
 def _prune_graph_json(source_file: str) -> None:
     """Elimina nodos/edges de un archivo borrado del graph.json global."""
@@ -685,7 +713,8 @@ def search_vault(query: str, limit: int = 5):
 
 # ponytail: chunker + sintetizador lossless — sin truncar, multi-petición por archivo
 CHUNK_SIZE = 6000  # chars por chunk (~1500 tokens, deja margen respuesta)
-HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
+# ponytail: bin por PATH del container (nueva imagen: /root/.local/bin/hermes; vieja: venv/bin)
+HERMES_BIN = "hermes"
 
 
 def _chunk_text(text: str, size: int = CHUNK_SIZE) -> list:
@@ -719,6 +748,14 @@ def _parse_hermes_output(stdout: str) -> str:
     while out and not out[-1]:
         out.pop()
     return "\n".join(out).strip() or stdout.strip()
+
+
+def _strip_to_markdown(text: str, level: int = 1) -> str:
+    """Corta todo hasta el primer heading real (level 1 = '# ', 2 = '## ').
+    ponytail: el transcript de hermes puede traer bloque Reasoning o eventos de tools
+    antes del contenido — el doc SIEMPRE empieza por su heading, así que se corta ahí."""
+    m = re.search(rf'^{"#" * level} ', text, re.MULTILINE)
+    return text[m.start():].strip() if m else text.strip()
 
 
 def _synthesize_wiki(stem: str, extracted_text: str, api_key: str) -> str:
@@ -808,22 +845,53 @@ def _load_session_history(session_id: str, limit: int = 10) -> list[dict]:
     msgs = s.get("messages", [])
     return msgs[-limit:] if len(msgs) > limit else msgs
 
-def _save_to_session(session_id: str, role: str, content: str, context: dict = None):
+def _save_to_session(session_id: str, role: str, content: str, context: dict = None, full_doc: str = ""):
     """Añade mensaje al JSON + actualiza updatedAt + auto-título."""
     s = _load_session(session_id)
     if not s:
         return
-    s["messages"].append({
+    msg = {
         "role": role,
         "content": content,
         "context": context,
         "timestamp": datetime.now().isoformat()
-    })
+    }
+    # fase 2 visor-md: docs de investigación llevan el doc completo para Visualizar tras recargar
+    if full_doc:
+        msg["full_doc"] = full_doc
+    s["messages"].append(msg)
     s["updatedAt"] = datetime.now().isoformat()
     # ponytail: auto-título desde primer mensaje user
     if not s.get("title") and role == "user":
         s["title"] = content[:40].replace("\n", " ").strip()
     _save_session(s)
+
+def _update_session_doc(session_id: str, old_content: str, content: str) -> bool:
+    """fase investigador: guarda el borrador — actualiza el full_doc del mensaje-doc que coincide (0 tokens, sin grafo)."""
+    s = _load_session(session_id)
+    if not s:
+        return False
+    for m in s.get("messages", []):
+        if m.get("full_doc") and m.get("full_doc") == old_content:
+            m["full_doc"] = content
+            s["updatedAt"] = datetime.now().isoformat()
+            _save_session(s)
+            return True
+    return False
+
+def _mark_session_brain(session_id: str, content: str, path: str) -> None:
+    """fase investigador: marca el doc de la sesión como 'en el cerebro' (context.brain_path) — alimenta el badge del listado."""
+    s = _load_session(session_id)
+    if not s:
+        return
+    changed = False
+    for m in s.get("messages", []):
+        if m.get("full_doc") == content:
+            m.setdefault("context", {})["brain_path"] = path
+            changed = True
+    if changed:
+        s["updatedAt"] = datetime.now().isoformat()
+        _save_session(s)
 
 
 @app.get("/api/chat/sessions")
@@ -915,10 +983,13 @@ async def delete_chat_session(session_id: str):
 
 SEARXNG_URL = "http://searxng:8080"
 
-def search_internet(query: str, limit: int = 5) -> list[dict]:
-    """Busca en SearXNG. Returns [{title, url, snippet}]."""
+def search_internet(query: str, limit: int = 5, engines: str = "") -> list[dict]:
+    """Busca en SearXNG. Returns [{title, url, snippet}]. engines: filtro de motores (p.ej. 'google')."""
     try:
-        resp = httpx.get(f"{SEARXNG_URL}/search", params={"q": query, "format": "json"}, timeout=15)
+        params = {"q": query, "format": "json"}
+        if engines:
+            params["engines"] = engines
+        resp = httpx.get(f"{SEARXNG_URL}/search", params=params, timeout=15)
         data = resp.json()
         return [{"title": r.get("title", ""), "url": r.get("url", ""), "snippet": r.get("content", "")}
                 for r in data.get("results", [])[:limit]]
@@ -939,7 +1010,37 @@ def _format_search_results(results: list[dict]) -> str:
 # CHAT — Refactor con perfiles + modos + memoria
 # ============================================
 
-HERMES_BIN = "/usr/local/lib/hermes-agent/venv/bin/hermes"
+# ponytail: bin por PATH del container (nueva imagen: /root/.local/bin/hermes; vieja: venv/bin)
+HERMES_BIN = "hermes"
+
+def _kill_orphan_hermes():
+    """El timeout mata el docker exec pero el hermes interno sigue generando — orfeo que
+    satura el gateway y degrada las siguientes llamadas. pkill de los 'hermes chat' vivos."""
+    subprocess.run(["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"),
+                    "exec", "-T", "sistema-agente", "pkill", "-f", "hermes chat"], capture_output=True)
+
+def _parse_stream_json(result) -> str:
+    """stream-json: el evento 'result' trae el texto RAW (el formato text renderiza markdown
+    a cajitas y pierde los '#'). Fallback legado (parseo de transcript) si no hay eventos."""
+    text, err = None, None
+    for ln in result.stdout.splitlines():
+        ln = ln.strip()
+        if not ln.startswith("{"):
+            continue
+        try:
+            e = json.loads(ln)
+        except Exception:
+            continue
+        if e.get("type") == "result":
+            if e.get("exit_code") == 0:
+                text = e.get("text") or ""
+            else:
+                err = (e.get("text") or str(e))[:300]
+    if err:
+        raise RuntimeError(f"hermes: {err}")
+    if text is not None and text.strip():
+        return text.strip()
+    return _parse_hermes_output(result.stdout)
 
 def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: int = 120, local: bool = False) -> str:
     """docker exec con perfil via HERMES_CONFIG, inyecta historial (últimos 10 msgs).
@@ -960,23 +1061,34 @@ def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: 
     profile_config = f"/app/hermes-home/profiles/{profile}/config.yaml"
     api_key = get_agent_key('hermes') or OPENROUTER_API_KEY
     model = _profile_model(profile, local)
+    # ponytail: deepseek-v4-flash es reasoning model — el razonamiento en espiral causaba timeouts
+    # intermitentes en docs largos. investigador y cerebro no lo necesitan (la calidad va en el prompt);
+    # cerebro además meta-comentaba las reglas con razonamiento alto.
+    reasoning_args = ["--reasoning", "low"] if profile in ("investigador", "cerebro") else []
     cmd = ["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"),
-           "exec",
+           "exec", "-T",
            "-e", f"OPENROUTER_API_KEY={api_key}",
            "-e", f"HERMES_CONFIG={profile_config}",
            "sistema-agente", HERMES_BIN, "chat", "--provider", "custom", "-m", model,
-           "-q", "--ignore-user-config", full_prompt]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-    if result.returncode != 0:
-        # ponytail: fallback sin perfil (config global), mismo modelo por flag
-        cmd_fallback = ["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"),
-                        "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-                        "sistema-agente", HERMES_BIN, "chat", "--provider", "custom", "-m", model,
-                        "-q", full_prompt]
-        result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=timeout)
+           *reasoning_args,
+           "--ignore-user-config", "-q", full_prompt, "--format", "stream-json"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
-            raise RuntimeError(result.stderr[:500])
-    return _parse_hermes_output(result.stdout)
+            # ponytail: fallback sin perfil (config global), mismo modelo por flag
+            cmd_fallback = ["docker", "compose", "-p", os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual"),
+                            "exec", "-T", "-e", f"OPENROUTER_API_KEY={api_key}",
+                            "sistema-agente", HERMES_BIN, "chat", "--provider", "custom", "-m", model,
+                            *reasoning_args,
+                            "-q", full_prompt, "--format", "stream-json"]
+            result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=timeout)
+            if result.returncode != 0:
+                # ponytail: hermes manda algunos errores por stdout (401 del proveedor) — no solo stderr
+                raise RuntimeError((result.stderr or result.stdout)[-500:])
+    except subprocess.TimeoutExpired:
+        _kill_orphan_hermes()
+        raise
+    return _parse_stream_json(result)
 
 def _search_vault_context(query: str) -> tuple[str, list[str]]:
     """RAG grafo-primero. Returns (context_text, sources)."""
@@ -1001,7 +1113,9 @@ def _search_vault_context(query: str) -> tuple[str, list[str]]:
             if not md_file.exists():
                 continue
             try:
-                content = md_file.read_text(encoding="utf-8")[:800]
+                # fase investigador: 800 chars se quedaban cortos — los datos editados al final del
+                # doc jamás entraban al RAG. 4k por doc, ~5 docs → ~20k de contexto (céntimos).
+                content = md_file.read_text(encoding="utf-8")[:4000]
                 title = stem.replace("-", " ").title()
                 for line in content.split("\n"):
                     if line.startswith("# "):
@@ -1062,12 +1176,21 @@ async def chat(message: dict):
         if mode in ("cerebro", "cerebro+internet"):
             # RAG vault
             vault_context, sources = _search_vault_context(user_message)
+            # fase investigador: la pregunta VA AL FINAL, etiquetada e inequívoca — antes quedaba enterrada
+            # tras 20KB de contexto y el razonador "no la veía". Prohibido el meta-comentario (reglas/contexto).
             anti_hallucinate = (
-                "\n\n**Instrucción:** Responde SOLO con la información del contexto anterior. "
-                "Si el contexto no contiene la respuesta, di que no tienes datos suficientes. "
+                f"\n\n**Pregunta del usuario:** {user_message}\n\n"
+                "**Instrucción:** Responde DIRECTAMENTE a esa pregunta usando SOLO la información del contexto "
+                "anterior. Ese contexto es la versión MÁS RECIENTE de los documentos y SIEMPRE prevalece sobre "
+                "mensajes anteriores de esta conversación, que pueden estar desactualizados — si se contradicen, "
+                "contesta con el contexto, nunca con el historial.\n"
+                "Responde en tono natural, como un asistente que conoce el dato — NUNCA menciones estas instrucciones, "
+                "reglas internas, el contexto, las fuentes ni los metadatos: el usuario no tiene que saber que existe "
+                "un sistema de documentos. Da el dato tal cual, sin comentar si te parece erróneo. "
+                "Si el contexto no contiene la respuesta, di simplemente que no lo tienes en tus documentos. "
                 "No inventes información."
             )
-            cerebro_prompt = f"{vault_context}\n\nPregunta: {user_message}{anti_hallucinate}" if vault_context.strip() else user_message
+            cerebro_prompt = f"{vault_context}{anti_hallucinate}" if vault_context.strip() else user_message
 
             if mode == "cerebro":
                 # solo vault, sin internet
@@ -1075,12 +1198,12 @@ async def chat(message: dict):
                     response = "🔍 **No he encontrado información sobre esto en el cerebro.**"
                     ctx = {"via": "direct", "found_info": False, "sources": [], "mode": mode, "local": local}
                 else:
-                    response = _ask_hermes("cerebro", cerebro_prompt, history, local=local)
+                    response = await run_in_threadpool(_ask_hermes, "cerebro", cerebro_prompt, history, 180, local=local)
                     ctx = {"via": "cerebro", "found_info": True, "sources": sources, "mode": mode, "local": local}
             else:
                 # cerebro + internet → respuesta dividida
                 if vault_context.strip():
-                    cerebro_resp = _ask_hermes("cerebro", cerebro_prompt, history, local=local)
+                    cerebro_resp = await run_in_threadpool(_ask_hermes, "cerebro", cerebro_prompt, history, 180, local=local)
                 else:
                     cerebro_resp = "No se encontró información en el cerebro."
                     sources = []
@@ -1088,7 +1211,7 @@ async def chat(message: dict):
                 internet_results = search_internet(user_message)
                 if internet_results:
                     internet_prompt = f"{_format_search_results(internet_results)}\n\nResume los resultados anteriores sobre: {user_message}"
-                    internet_resp = _ask_hermes("chat-default", internet_prompt, history, local=local)
+                    internet_resp = await run_in_threadpool(_ask_hermes, "chat-default", internet_prompt, history, local=local)
                 else:
                     internet_resp = "No se pudieron obtener resultados de internet."
                 response = f"🧠 **CEREBRO**\n\n{cerebro_resp}\n\n---\n\n🌐 **INTERNET**\n\n{internet_resp}"
@@ -1100,7 +1223,7 @@ async def chat(message: dict):
             internet_results = search_internet(user_message)
             search_context = _format_search_results(internet_results)
             prompt = f"{search_context}\n\n{user_message}" if search_context else user_message
-            response = _ask_hermes(profile, prompt, history, local=local)
+            response = await run_in_threadpool(_ask_hermes, profile, prompt, history, local=local)
             ctx = {"via": profile, "found_info": True, "sources": [], "mode": mode, "internet_results": len(internet_results), "local": local}
 
         # ponytail: guardar respuesta en sesión
@@ -1127,70 +1250,186 @@ def _extract_summary(full_doc: str) -> str:
     return '\n'.join(lines[:5])[:500]
 
 
-@app.post("/api/chat/investigate")
-async def investigate(message: dict):
-    """Investiga mensajes seleccionados → documento Markdown completo + resumen breve.
-    ponytail: 1 sola llamada al investigador (no 2). Multi-msg genera directrices primero."""
+# ============================================
+# INVESTIGADOR v2 — cuestionario + internet + niveles + deepen
+# ============================================
+
+@app.post("/api/chat/investigate/questions")
+async def investigate_questions(message: dict):
+    """Cuestionario del panel: 5 preguntas × 4 opciones (estilo grill).
+    Con answers previas, la tanda nueva afina sobre ellas. round 1..3 (techo visible en el panel)."""
+    topic = (message.get("topic") or "").strip()
     messages_list = message.get("messages", [])
-    session_id = message.get("session_id")
+    answers = message.get("answers") or []
+    round_num = int(message.get("round") or 0) + 1
+    if not topic and not messages_list:
+        raise HTTPException(status_code=400, detail="No hay tema que investigar")
+    if not (get_agent_key("hermes") or OPENROUTER_API_KEY):
+        raise HTTPException(status_code=400, detail="No hay API key configurada")
+
+    combined = topic
+    for msg in messages_list:
+        combined += f"\n[{msg.get('role', 'user')}]: {msg.get('content', '')}"
+
+    prompt = (
+        "Preparas una investigación personalizada para el usuario. Genera 5 preguntas de refinamiento SOBRE EL TEMA EN SÍ: "
+        "datos concretos, subtemas, personas implicadas, fechas, alcance temporal o geográfico, ángulos o enfoques del contenido. "
+        "PROHIBIDO preguntar por el formato del documento, la extensión, el idioma, el nivel o 'para qué lo quiere' — "
+        "eso ya lo controla el usuario con los controles del panel. "
+        "Las opciones suenan a persona: cortas, concretas, sin frases hechas de máquina.\n"
+        'Responde SOLO con JSON válido, sin texto antes ni después: '
+        '{"questions": [{"q": "...", "options": ["...", "...", "...", "..."]}]} '
+        "— exactamente 5 preguntas, exactamente 4 opciones cada una.\n\n"
+        f"Tema y contexto del usuario:\n{combined[:2000]}\n\n"
+    )
+    if answers:
+        prompt += ("**Respuestas que el usuario ya dio (afina sobre ellas; NO repitas lo preguntado):**\n"
+                   + "\n".join(f"- {a}" for a in answers) + "\n\n")
+    prompt += f"Esta es la ronda {round_num} de 3."
+
+    try:
+        raw = await run_in_threadpool(_ask_hermes, "investigador", prompt, None, 60)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="⏱️ Las preguntas tardaron demasiado. Reintenta.")
+    # ponytail: parseo tolerante — primer bloque {...} del output del modelo
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    questions = []
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            questions = [{"q": q.get("q", ""), "options": [str(o) for o in (q.get("options") or [])[:4]]}
+                         for q in data.get("questions", [])[:5]]
+            questions = [q for q in questions if q.get("q")]
+        except Exception:
+            questions = []
+    if not questions:
+        raise HTTPException(status_code=502, detail="El modelo no devolvió preguntas válidas. Pulsa reintentar.")
+    return {"questions": questions, "round": round_num}
+
+
+@app.post("/api/chat/investigate/topic")
+async def investigate_topic(message: dict):
+    """Genera el tema a investigar a partir de los mensajes seleccionados (contexto del chat)."""
+    messages_list = message.get("messages", [])
     if not messages_list:
         raise HTTPException(status_code=400, detail="No hay mensajes seleccionados")
-
-    config = get_agent_config()
-    api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
-    if not api_key:
-        return {"response": "⚠️ No hay API key configurada.", "full_doc": "", "context": {"error": "no_api_key"}}
-
-    # ponytail: combinar mensajes seleccionados como contexto
+    if not (get_agent_key("hermes") or OPENROUTER_API_KEY):
+        raise HTTPException(status_code=400, detail="No hay API key configurada")
     combined = ""
     for msg in messages_list:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        combined += f"\n[{role}]: {content}\n"
-
-    history = _load_session_history(session_id, limit=10) if session_id else []
+        combined += f"\n[{msg.get('role', 'user')}]: {msg.get('content', '')}"
+    prompt = (
+        "Resume en UNA frase corta el tema exacto que el usuario quiere investigar a partir de esta conversación. "
+        "Responde SOLO la frase (sin comillas, sin preámbulos, sin punto final), máximo 120 caracteres.\n\n"
+        f"Conversación:{combined[:3000]}"
+    )
     try:
-        # ponytail: multi-mensaje (2+) → pre-resumen de directrices antes del documento
-        if len(messages_list) >= 2:
-            directive_prompt = (
-                "Analiza los siguientes mensajes y extrae los puntos clave, "
-                "directrices e instrucciones sobre el tema a investigar. "
-                "Formato: lista de puntos clave. Sin preámbulos.\n\n"
-                f"Mensajes:\n{combined}"
-            )
-            directives = _ask_hermes("chat-default", directive_prompt, history, timeout=30)
-            prompt = (
-                "Investiga el siguiente tema basándote en las directrices extraídas y genera un documento "
-                "en formato Markdown compatible con Obsidian. Empieza con '## Resumen' (3-5 líneas), "
-                "luego secciones detalladas con títulos (#, ##, ###), **negritas**, listas, [[wikilinks]], "
-                "tablas y code blocks cuando aplique. Estructura: # Título, ## Resumen, ## Secciones, "
-                "## Conclusiones, ## Fuentes. Sin preámbulos.\n\n"
-                f"Directrices extraídas:\n{directives}\n\n"
-                f"Contexto del chat:\n{combined}"
-            )
-        else:
-            prompt = (
-                "Investiga el siguiente tema y genera un documento "
-                "en formato Markdown compatible con Obsidian. Empieza con '## Resumen' (3-5 líneas), "
-                "luego secciones detalladas con títulos (#, ##, ###), **negritas**, listas, [[wikilinks]], "
-                "tablas y code blocks cuando aplique. Estructura: # Título, ## Resumen, ## Secciones, "
-                "## Conclusiones, ## Fuentes. Sin preámbulos.\n\n"
-                f"Contexto del chat:\n{combined}"
-            )
+        topic = await run_in_threadpool(_ask_hermes, "investigador", prompt, None, 30)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="⏱️ El tema tardó demasiado. Reintenta.")
+    topic = (topic or "").strip().strip('"').splitlines()[0][:200] if topic else ""
+    if not topic:
+        raise HTTPException(status_code=502, detail="El modelo no devolvió un tema. Reintenta.")
+    return {"topic": topic}
 
-        # ponytail: timeout 150s — deepseek-v4-flash tarda para docs largos
-        full_doc = _ask_hermes("investigador", prompt, history, timeout=150)
+
+@app.post("/api/chat/investigate")
+async def investigate(message: dict):
+    """Investiga tema/mensajes → documento Markdown completo + resumen breve.
+    Campos opcionales: level (principiante|intermedio|experto), answers (directrices del cuestionario),
+    topic, deepen {doc, subtema} (añade sección nueva al doc existente, no regenera)."""
+    messages_list = message.get("messages", [])
+    session_id = message.get("session_id")
+    level = message.get("level", "")
+    answers = message.get("answers") or []
+    topic = (message.get("topic") or "").strip()
+    deepen = message.get("deepen") or {}
+
+    if not (get_agent_key("hermes") or OPENROUTER_API_KEY):
+        return {"response": "⚠️ No hay API key configurada.", "full_doc": "", "context": {"error": "no_api_key"}}
+
+    try:
+        # ponytail: deepen — NO regenera el doc; sección nueva que se inserta antes de ## Fuentes
+        if deepen.get("doc") and deepen.get("subtema"):
+            doc, subtema = deepen["doc"], deepen["subtema"]
+            prompt = (
+                f"Añade UNA sección nueva a un documento de investigación existente. "
+                f"Genera SOLO esa sección, empezando por el encabezado '## {subtema}' "
+                "(con ### si lo necesita), en el mismo estilo del documento, sin repetir lo ya cubierto "
+                "y sin cerrar el documento (sin Conclusiones ni Fuentes). Usa [[wikilinks]] y datos concretos.\n\n"
+                f"**Resumen del documento existente:**\n{_extract_summary(doc)}\n\n"
+                f"**Subtema a desarrollar:** {subtema}"
+            )
+            search = search_internet(subtema, limit=8, engines="google")
+            if search:
+                prompt += "\n\n" + _format_search_results(search)
+            prompt += ("\n\nREGLA DE VERACIDAD: afirma SOLO datos de los resultados de búsqueda o del documento; "
+                       "no inventes ni mezcles fragmentos de fuentes distintas."
+                       "\n\nNo uses herramientas ni escribas archivos: responde la sección como texto en tu mensaje.")
+            section = _strip_to_markdown(await run_in_threadpool(_ask_hermes, "investigador", prompt, None, 120), level=2)
+            # ponytail: insertar antes de ## Fuentes existentes (título intacto, fuentes acumuladas)
+            idx = doc.rfind("## Fuentes")
+            full_doc = (doc[:idx].rstrip() + "\n\n" + section + "\n\n" + doc[idx:]) if idx != -1 else doc.rstrip() + "\n\n" + section
+            # fase 2 visor-md: persistir ANTES de responder — recarga a mitad no pierde el doc
+            if session_id:
+                _save_to_session(session_id, "assistant", f"Sección añadida: {subtema}",
+                                 {"via": "investigador", "is_document": True, "offer_save": True, "sources": []},
+                                 full_doc=full_doc)
+            return {"response": f"Sección añadida: {subtema}", "full_doc": full_doc,
+                    "context": {"via": "investigador", "is_document": True, "offer_save": True, "sources": []}}
+
+        if not messages_list and not topic:
+            raise HTTPException(status_code=400, detail="No hay mensajes seleccionados ni tema")
+
+        # ponytail: combinar mensajes seleccionados como contexto
+        combined = ""
+        for msg in messages_list:
+            combined += f"\n[{msg.get('role', 'user')}]: {msg.get('content', '')}\n"
+        if not topic:
+            topic = combined.strip()
+
+        # FIX investigador v2: internet SIEMPRE antes de generar (causa de la mala calidad anterior).
+        # ponytail: sin filtro de engines — el mix default (google cse + ddg + wikipedia) es el robusto; 'google' puro se cae
+        search_block = _format_search_results(search_internet(topic, limit=10))
+
+        # ponytail: niveles = 3 plantillas de prompt (coste cero, se hacen los tres)
+        level_block = {
+            "principiante": "Audiencia principiante: sin jerga; explica cada término la primera vez que aparece y usa analogías cotidianas. ",
+            "intermedio": "Audiencia intermedia: asume lo básico del tema; ni explicaciones elementales ni tecnicismos innecesarios. ",
+            "experto": "Audiencia experta: directo al grano, técnico y denso en datos; sin explicaciones básicas ni introducir el tema. ",
+        }.get(level, "")
+        answers_block = ("**Directrices del cuestionario (respuestas del usuario):**\n"
+                         + "\n".join(f"- {a}" for a in answers) + "\n\n") if answers else ""
+
+        prompt = (
+            f"TEMA A INVESTIGAR (obligatorio, no lo cambies): {topic}. "
+            "Investiga EXACTAMENTE ese tema aunque la conversación hable de otras cosas. "
+            "Genera un documento de investigación en Markdown compatible con Obsidian. "
+            f"{level_block}Estructura FIJA: # Título, ## Resumen (3-5 líneas), secciones de desarrollo (##/###), "
+            "## Conclusiones, ## Fuentes. **negritas**, listas, [[wikilinks]], tablas y code blocks cuando aplique. "
+            "Sin preámbulos.\n\n"
+            "REGLA DE VERACIDAD: afirma SOLO datos que aparezcan en los resultados de búsqueda o en el contexto del chat. "
+            "NO inventes ni deduzcas ningún dato que no esté en las fuentes. NO mezcles fragmentos de fuentes distintas "
+            "que hablan de personas o temas diferentes. Cada dato relevante debe poder rastrearse hasta una fuente de ## Fuentes.\n\n"
+            + answers_block
+            + f"Contexto del chat:\n{combined}\n"
+            + search_block
+            + "\nNo uses herramientas ni escribas archivos: responde el documento completo como texto en tu mensaje."
+        )
+
+        # ponytail: 300s de margen — con GLM-5.3-flash (~90 tok/s) un doc tarda 10-40s; cubre fases lentas del upstream
+        full_doc = _strip_to_markdown(await run_in_threadpool(_ask_hermes, "investigador", prompt, None, 300))
         summary = _extract_summary(full_doc)
+
+        # fase 2 visor-md: persistir ANTES de responder — recarga a mitad no pierde el doc
+        ctx = {"via": "investigador", "is_document": True, "offer_save": True, "sources": []}
+        if session_id:
+            _save_to_session(session_id, "assistant", summary, ctx, full_doc=full_doc)
 
         return {
             "response": summary,
             "full_doc": full_doc,
-            "context": {
-                "via": "investigador",
-                "is_document": True,
-                "offer_save": True,
-                "sources": [],
-            }
+            "context": ctx,
         }
     except subprocess.TimeoutExpired:
         return {"response": "⏱️ La investigación tardó demasiado.", "full_doc": "", "context": {"error": "investigate_timeout"}}
@@ -1204,6 +1443,7 @@ class SaveOutputRequest(_BM):
     project_id: str = "individual"
     name: str = ""
     description: str = ""
+    session_id: str = ""
 
 @app.post("/api/vault/save-output")
 async def save_output(req: SaveOutputRequest):
@@ -1233,24 +1473,302 @@ async def save_output(req: SaveOutputRequest):
     wiki_file.write_text(content, encoding="utf-8")
 
     graphify_ok = False
-    try:
-        # ponytail: obtener vault_host real del host (VAULT_PATH es /app/vault dentro del contenedor)
-        vault_host = VAULT_PATH
-        vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
-        partial = _run_graphify(str(out_file), vault_host)
-        if partial:
-            _merge_graph(partial, safe_name + ".md")
-            graphify_ok = True
-    except Exception as e:
-        print(f"⚠️ save-output graphify error: {e}")
+    # fase investigador: graphify puede devolver 0 nodos (razonadores truncan el JSON) → hasta 3 intentos.
+    # Merge SOLO con extracto no vacío — 0 nodos ≠ grafo actualizado, el toast no puede mentir.
+    for _ in range(3):
+        try:
+            # ponytail: obtener vault_host real del host (VAULT_PATH es /app/vault dentro del contenedor)
+            vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+            partial = _run_graphify(str(out_file), vault_host)
+            if partial and partial.get("nodes"):
+                _merge_graph(partial, safe_name + ".md")
+                graphify_ok = True
+                break
+        except Exception as e:
+            print(f"⚠️ save-output graphify error: {e}")
+
+    # fase investigador: marcar el doc de la sesión como 'en el cerebro' → badge en Ver investigaciones
+    if req.session_id:
+        _mark_session_brain(req.session_id, req.content, f"outputs/{req.project_id}/{safe_name}.md")
 
     return {
         "status": "saved",
         "path": f"outputs/{req.project_id}/{safe_name}.md",
         "wiki_path": f"wiki/{safe_name}.md",
         "graph_updated": graphify_ok,
-        "project_id": req.project_id
+        "project_id": req.project_id,
+        "content": req.content,  # fase investigador: el frontend marca brain_path con esto al terminar el job
     }
+
+
+class UpdateFileRequest(_BM):
+    path: str
+    content: str
+    graphify: bool = True  # fase investigador: False = solo escribir archivo+wiki (instantáneo), sin re-grafiar
+
+
+def _replace_graph(partial: dict, source_file: str) -> None:
+    """fase 2 visor-md: reemplaza en graph.json los nodos/edges de UN archivo por los re-extraídos.
+    Purga solo si el extracto nuevo llegó (grafo viejo > grafo vacío)."""
+    # ponytail: extracto vacío NO purga — un reintentó de graphify sin nodos no puede borrar el conocimiento
+    if not partial or not partial.get("nodes"):
+        return
+    existing = {"nodes": [], "edges": []}
+    if GRAPH_PATH.exists():
+        try:
+            with open(GRAPH_PATH) as f:
+                existing = json.load(f)
+        except Exception:
+            pass
+    # purga: nodos/edges de ESTE source_file (los sin source_file = sistema, quedan)
+    existing["nodes"] = [n for n in existing["nodes"] if n.get("source_file") != source_file]
+    existing["edges"] = [e for e in existing["edges"] if e.get("source_file") != source_file]
+    # re-inserta con los mismos tags y dedups que _merge_graph
+    for n in partial.get("nodes", []):
+        if "source_file" not in n:
+            n["source_file"] = source_file
+    existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
+    existing["nodes"].extend([n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids])
+    existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
+    existing["edges"].extend([e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges])
+    GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(GRAPH_PATH, "w", encoding="utf-8") as f:
+        json.dump(existing, f, ensure_ascii=False, indent=2)
+    _record_graphed(source_file)
+
+
+@app.post("/api/vault/update-file")
+async def update_vault_file(req: UpdateFileRequest):
+    """fase 2 visor-md: edición en caliente — reescribe raw/|outputs/, actualiza copia wiki y re-grafía ese archivo."""
+    vault = Path(VAULT_PATH).resolve()
+    target = (vault / req.path.lstrip("/")).resolve()
+    # ponytail: confinado a raw/ u outputs/ — nada de escapes por ..
+    if not (str(target).startswith(str(vault / "raw")) or str(target).startswith(str(vault / "outputs"))) \
+            or target.suffix != ".md" or not target.exists():
+        raise HTTPException(status_code=400, detail="Ruta no permitida")
+
+    target.write_text(req.content, encoding="utf-8")
+
+    # copia wiki: solo archivos de outputs/ que ya tienen espejo (save-output la crea)
+    source_file = target.name
+    wiki = vault / "wiki" / source_file
+    if str(target).startswith(str(vault / "outputs")) and wiki.exists():
+        wiki.write_text(req.content, encoding="utf-8")
+
+    if not req.graphify:
+        # fase investigador: pre-escritura instantánea del job save-doc — la vista del doc y el RAG
+        # (wiki) son frescos YA; el formato LLM y el re-grafiado van después en el mismo job
+        return {
+            "status": "updated",
+            "path": str(target.relative_to(vault)).replace("\\", "/"),
+            "graph_updated": None,
+        }
+
+    graph_ok = False
+    try:
+        vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+        # ponytail: graphify flaquea (reasoning consume el presupuesto y trunca el JSON → 0 nodos aleatorio);
+        # 3 intentos y solo purge/merge con extracto NO vacío — grafo viejo > grafo vacío
+        for _ in range(3):
+            partial = await run_in_threadpool(_run_graphify, str(target), vault_host)
+            if partial and partial.get("nodes"):
+                await run_in_threadpool(_replace_graph, partial, source_file)
+                graph_ok = True
+                break
+    except Exception as e:
+        print(f"⚠️ update-file graphify error: {e}")
+
+    return {
+        "status": "updated",
+        "path": str(target.relative_to(vault)).replace("\\", "/"),
+        "graph_updated": graph_ok
+    }
+
+
+@app.get("/api/vault/file-status")
+async def vault_file_status(path: str):
+    """fase 3 visor-md: ¿está el archivo en el cerebro (grafo) y está modificado desde entonces?"""
+    vault = Path(VAULT_PATH).resolve()
+    target = (vault / path.lstrip("/")).resolve()
+    if not str(target).startswith(str(vault)) or not target.exists():
+        raise HTTPException(status_code=404, detail="Archivo no encontrado")
+    name = target.name
+    in_graph = False
+    if GRAPH_PATH.exists():
+        try:
+            g = json.load(open(GRAPH_PATH))
+            in_graph = any(n.get("source_file") == name for n in g.get("nodes", []))
+        except Exception:
+            pass
+    stale = False
+    try:
+        meta_path = GRAPH_PATH.parent / "graph-meta.json"
+        if in_graph and meta_path.exists():
+            meta = json.load(open(meta_path))
+            if name in meta:
+                graphed = datetime.fromisoformat(meta[name])
+                stale = target.stat().st_mtime - graphed.timestamp() > 2
+    except Exception:
+        pass
+    return {"in_graph": in_graph, "stale": stale}
+
+
+class FormatFragmentRequest(_BM):
+    fragment: str
+
+
+@app.post("/api/research/format-fragment")
+async def format_fragment(req: FormatFragmentRequest):
+    """fase 3 visor-md (2a): reformatea SOLO el fragmento nuevo con las reglas Graphify (TEMPLATE.md). Sin internet."""
+    if not (get_agent_key("hermes") or OPENROUTER_API_KEY):
+        return {"formatted": req.fragment, "context": {"error": "no_api_key"}}
+    prompt = (
+        "Reformatea este fragmento de documento de investigación para que cumpla las reglas de estructura Graphify. "
+        "Devuelve SOLO el fragmento reformateado en Markdown — no añadas secciones nuevas ni repitas el documento entero.\n"
+        "REGLAS: conceptos con nombre inequívoco, repetido IDÉNTICO cada vez; [[wikilink]] solo a conceptos que existan en el fragmento; "
+        "relaciones explícitas con verbo (X depende de Y, X se configura con Z); una idea por párrafo; tablas solo comparaciones; "
+        "sin emojis como datos. NO inventes datos nuevos: reordena y da formato a lo que ya está escrito. "
+        "NO añadas listas de conceptos, resúmenes ni metadatos extra: devuelve únicamente el fragmento con el formato aplicado.\n\n"
+        f"FRAGMENTO:\n{req.fragment}"
+    )
+    try:
+        out = _strip_to_markdown(await run_in_threadpool(_ask_hermes, "investigador", prompt, None, 120), level=2)
+        return {"formatted": out or req.fragment}
+    except subprocess.TimeoutExpired:
+        return {"formatted": req.fragment, "context": {"error": "timeout"}}
+
+
+# ============================================
+# fase 4 visor-md: JOBS en background — investigaciones y guardados sobreviven recargas del navegador
+# ============================================
+_JOBS: dict = {}  # id → {id, kind, status: running|done|error, started, done_at?, result?, error?}
+
+def _jobs_prune() -> None:
+    # ponytail: registro en memoria, último worker — reiniciar el backend los pierde (aceptado)
+    now = datetime.now()
+    for k in [k for k, j in _JOBS.items() if j["status"] != "running" and (now - datetime.fromisoformat(j.get("done_at", j["started"]))).total_seconds() > 3600]:
+        _JOBS.pop(k, None)
+
+@app.get("/api/jobs")
+async def list_jobs():
+    _jobs_prune()
+    return {"jobs": list(_JOBS.values())}
+
+@app.post("/api/jobs/investigate")
+async def jobs_investigate(message: dict):
+    """Lanza investigate() en background → {job_id}. El doc se persiste en la sesión DENTRO del job (recarga-safe)."""
+    jid = uuid.uuid4().hex[:12]
+    _JOBS[jid] = {"id": jid, "kind": "investigate", "status": "running", "started": datetime.now().isoformat(), "topic": (message.get("topic") or "")[:60]}
+
+    async def run():
+        try:
+            d = await investigate(message)
+            if d.get("context", {}).get("error"):
+                _JOBS[jid].update(status="error", error=d.get("response", "Error"), done_at=datetime.now().isoformat())
+            else:
+                _JOBS[jid].update(status="done", result=d, done_at=datetime.now().isoformat())
+        except Exception as e:
+            _JOBS[jid].update(status="error", error=str(e), done_at=datetime.now().isoformat())
+
+    asyncio.create_task(run())
+    return {"job_id": jid, "topic": _JOBS[jid]["topic"]}
+
+
+class SaveDocJobRequest(_BM):
+    path: str = ""
+    old_content: str = ""
+    new_content: str = ""
+    name: str = ""
+    session_id: str = ""
+
+
+@app.post("/api/jobs/save-doc")
+async def jobs_save_doc(req: SaveDocJobRequest):
+    """Guardado en background. path → update-file (re-grafíea SOLO ese archivo). Sin path + sesión →
+    actualiza el borrador en la sesión (0 tokens, 0 grafo). Fallback sin sesión → save-output."""
+    jid = uuid.uuid4().hex[:12]
+    _JOBS[jid] = {"id": jid, "kind": "save-doc", "status": "running", "started": datetime.now().isoformat(), "path": req.path}
+
+    async def run():
+        try:
+            # ponytail: mismo diff por conjuntos que el frontend — solo las líneas nuevas pasan por el LLM
+            old_set = {l.strip() for l in req.old_content.split("\n") if l.strip()}
+            added = [l for l in req.new_content.split("\n") if l.strip() and l.strip() not in old_set]
+            final = req.new_content
+
+            if req.path:
+                # doc ya en el cerebro: escribir YA el contenido crudo — la vista del doc y el RAG
+                # (wiki) son frescos al instante; el re-grafiado va después
+                await update_vault_file(UpdateFileRequest(path=req.path, content=req.new_content, graphify=False))
+                # fase investigador: SIN reescritura LLM en ediciones del usuario — lo que escribe se
+                # guarda TAL CUAL (format_fragment corrompia datos: "25 de julio" → "5 de julio").
+                # El estilo Graphify lo aporta el investigador al generar el doc original.
+                final = req.new_content
+                r = await update_vault_file(UpdateFileRequest(path=req.path, content=final))
+                if req.session_id:
+                    _update_session_doc(req.session_id, req.old_content, final)  # draft sincronizado con el archivo
+            elif req.session_id and _update_session_doc(req.session_id, req.old_content, final):
+                # ponytail: guardar borrador — solo la sesión, sin LLM ni grafo (ahorra tokens)
+                r = {"status": "draft-saved", "draft": True, "path": ""}
+            else:
+                if added:
+                    try:
+                        d = await format_fragment(FormatFragmentRequest(fragment="\n".join(added)))
+                        frag = (d.get("formatted") or "").strip()
+                        if frag and not d.get("context", {}).get("error") and frag != "\n".join(added).strip():
+                            added_set = {l.strip() for l in added}
+                            out, ins = [], False
+                            for l in req.new_content.split("\n"):
+                                if l.strip() in added_set:
+                                    if not ins: out.append(frag); ins = True
+                                else: out.append(l)
+                            final = "\n".join(out)
+                    except Exception:
+                        pass
+                r = await save_output(SaveOutputRequest(content=final, project_id="individual", name=req.name or "investigacion"))
+                r["formatted"] = bool(added)  # solo el fallback reescribe con LLM
+            r.setdefault("formatted", False)
+            # fase investigador: el frontend sincroniza chat/historial/panel con el contenido final
+            r["old_content"] = req.old_content
+            r["new_content"] = final
+            _JOBS[jid].update(status="done", result=r, done_at=datetime.now().isoformat())
+        except HTTPException as e:
+            _JOBS[jid].update(status="error", error=str(e.detail), done_at=datetime.now().isoformat())
+        except Exception as e:
+            _JOBS[jid].update(status="error", error=str(e), done_at=datetime.now().isoformat())
+
+    asyncio.create_task(run())
+    return {"job_id": jid}
+
+
+class SaveBrainJobRequest(_BM):
+    content: str
+    project_id: str = "individual"
+    name: str = ""
+    description: str = ""
+    session_id: str = ""
+
+
+@app.post("/api/jobs/save-brain")
+async def jobs_save_brain(req: SaveBrainJobRequest):
+    """fase investigador: 'Añadir al cerebro' en background — el matraz anima mientras importa
+    (graphify tarda ~45s) y al acabar: toast + bolita (roja si las neuronas fallaron tras reintentos)."""
+    jid = uuid.uuid4().hex[:12]
+    _JOBS[jid] = {"id": jid, "kind": "save-brain", "status": "running", "started": datetime.now().isoformat(), "path": ""}
+
+    async def run():
+        try:
+            r = await save_output(SaveOutputRequest(content=req.content, project_id=req.project_id,
+                                                    name=req.name, description=req.description,
+                                                    session_id=req.session_id))
+            _JOBS[jid].update(status="done", result=r, done_at=datetime.now().isoformat())
+        except HTTPException as e:
+            _JOBS[jid].update(status="error", error=str(e.detail), done_at=datetime.now().isoformat())
+        except Exception as e:
+            _JOBS[jid].update(status="error", error=str(e), done_at=datetime.now().isoformat())
+
+    asyncio.create_task(run())
+    return {"job_id": jid}
 
 
 # ============================================
@@ -1279,6 +1797,92 @@ async def get_init_config():
     return safe_config
 
 # (El endpoint /api/init/configure está definido más abajo, ampliado con soporte para modelMode y hardware)
+
+@app.get("/api/agent/avatar")
+async def get_agent_avatar():
+    """Imagen del agente como data-URL (vacío = sin imagen)."""
+    config = get_agent_config() or {}
+    return {"avatar": config.get("avatar", "")}
+
+
+@app.post("/api/agent/avatar")
+async def set_agent_avatar(request: dict):
+    config = get_agent_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    data = (request.get("avatar") or "").strip()
+    if data:
+        if not data.startswith("data:image/"):
+            raise HTTPException(status_code=400, detail="Formato no válido: se espera data:image/*")
+        if len(data) > 400_000:
+            raise HTTPException(status_code=413, detail="Imagen demasiado grande (máx ~300KB)")
+    config["avatar"] = data
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+    return {"success": True, "avatar": data}
+
+
+@app.get("/api/web/palettes")
+async def get_web_palettes():
+    """Paletas de color de la web (todos los dispositivos) + cuál está activa."""
+    config = get_agent_config() or {}
+    w = config.get("webTheme") or {}
+    return {"palettes": w.get("palettes", []), "active": w.get("active", "")}
+
+
+@app.post("/api/web/palettes")
+async def save_web_palette(request: dict):
+    """Crea/reemplaza una paleta {name, primary, secondary?, background?} y opcionalmente la activa."""
+    config = get_agent_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    name = (request.get("name") or "").strip()
+    primary = (request.get("primary") or "").strip()
+    if not name or not re.match(r"^#[0-9a-fA-F]{6}$", primary):
+        raise HTTPException(status_code=400, detail="Se requiere nombre y color #rrggbb")
+    hex_re = re.compile(r"^#[0-9a-fA-F]{6}$")
+    pal = {"name": name, "primary": primary}
+    for extra in ("secondary", "background"):
+        v = (request.get(extra) or "").strip()
+        if v and hex_re.match(v):
+            pal[extra] = v
+    w = config.setdefault("webTheme", {})
+    palettes = w.setdefault("palettes", [])
+    palettes[:] = [p for p in palettes if p.get("name") != name]
+    palettes.append(pal)
+    if request.get("activate", True):
+        w["active"] = name
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+    return {"success": True, "palettes": palettes, "active": w.get("active", "")}
+
+
+@app.delete("/api/web/palettes/{name}")
+async def delete_web_palette(name: str):
+    config = get_agent_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    w = config.setdefault("webTheme", {})
+    w["palettes"] = [p for p in w.get("palettes", []) if p.get("name") != name]
+    if w.get("active") == name:
+        w["active"] = ""
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+    return {"success": True, "palettes": w.get("palettes", []), "active": w.get("active", "")}
+
+
+@app.delete("/api/web/active")
+async def clear_web_active():
+    """Desactiva la paleta global (vuelve al tema por defecto)."""
+    config = get_agent_config()
+    if config is None:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    w = config.setdefault("webTheme", {})
+    w["active"] = ""
+    config["updatedAt"] = datetime.now().isoformat()
+    save_agent_config(config)
+    return {"success": True}
+
 
 @app.put("/api/agent/config")
 async def update_agent_config(request: dict):
@@ -1321,6 +1925,20 @@ async def reset_agent_config():
         print(f"⚠️ No se pudo eliminar el agente: {e}")
 
     return {"success": True, "message": "Configuración eliminada y agente detenido. Reinicia la página para volver a configurar."}
+
+
+@app.get("/api/config/export")
+async def export_agent_config():
+    """agent-config.json sin secretos (descarga desde Ajustes)."""
+    config = get_agent_config()
+    if not config:
+        raise HTTPException(status_code=404, detail="No hay configuración")
+    _sanitize_credentials(config)
+    return Response(
+        content=json.dumps(config, indent=2, ensure_ascii=False),
+        media_type="application/json",
+        headers={"Content-Disposition": "attachment; filename=agent-config.json"},
+    )
 
 
 @app.get("/api/agent/config")
@@ -1377,6 +1995,7 @@ async def update_profiles_models(request: dict):
     new_models_local = request.get("modelsLocal", {})
     new_names = request.get("profileNames", {})
     old_models = config.get("models", {})
+    old_models_local = config.get("modelsLocal") or {}
 
     config["models"] = new_models
     if new_models_local:
@@ -1385,21 +2004,24 @@ async def update_profiles_models(request: dict):
     config["updatedAt"] = datetime.now().isoformat()
     save_agent_config(config)
 
-    # ponytail: docker restart reejecuta entrypoint → generate_config.py + install_profiles.sh aplican nuevos modelos
-    result = subprocess.run(_compose_cmd("restart", "sistema-agente"), capture_output=True, text=True, check=False)
-    if result.returncode != 0:
-        return {"success": False, "message": f"Modelos guardados pero error al reiniciar: {result.stderr}"}
+    # ponytail: reinicio solo si cambió algún modelo/combo; renombrar perfiles es solo visual
+    models_changed = old_models != new_models or old_models_local != (new_models_local or {})
+    if models_changed:
+        # docker restart reejecuta entrypoint → generate_config.py + install_profiles.sh aplican nuevos modelos
+        result = subprocess.run(_compose_cmd("restart", "sistema-agente"), capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            return {"success": False, "message": f"Modelos guardados pero error al reiniciar: {result.stderr}"}
 
-    # Esperar readiness
-    import time
-    for _ in range(30):
-        try:
-            r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://sistema-agente:8080/login"], capture_output=True, text=True, check=False)
-            if r.stdout.strip() == "200":
-                break
-        except:
-            pass
-        time.sleep(2)
+        # Esperar readiness
+        import time
+        for _ in range(30):
+            try:
+                r = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "http://sistema-agente:8080/login"], capture_output=True, text=True, check=False)
+                if r.stdout.strip() == "200":
+                    break
+            except:
+                pass
+            time.sleep(2)
 
     changes = [
         {"name": new_names.get(p["key"], p["label"]), "oldModel": old_models.get(p["key"], p["default"]), "newModel": new_models.get(p["key"], p["default"])}
@@ -1818,6 +2440,30 @@ async def import_vault(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error al importar: {e}")
 
 
+@app.post("/api/vault/reset")
+async def reset_vault():
+    """Reinicio de bóveda: borra TODO el contenido (raw, wiki, outputs, chat-sesiones)
+    y resetea índice y grafo. La configuración del agente NO se toca — el agente sigue
+    funcionando, sin saber nada de los archivos del cerebro."""
+    import shutil
+    vault = Path(VAULT_PATH)
+    if not vault.exists():
+        raise HTTPException(status_code=404, detail="Vault no encontrado")
+    for sub in ("raw", "wiki", "outputs", "chat-sesiones"):
+        d = vault / sub
+        if d.exists():
+            shutil.rmtree(str(d))
+        d.mkdir(parents=True, exist_ok=True)
+    (vault / "system" / "index.json").write_text(
+        json.dumps({"version": "2.0.0", "lastIndexed": None, "pages": []}), encoding="utf-8")
+    (vault / "system" / "graph.json").write_text(
+        json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+    gt = vault / "system" / "graphify-tmp"
+    if gt.exists():
+        shutil.rmtree(str(gt))
+    return {"success": True, "message": "Bóveda reiniciada. Contenido borrado, agente intacto."}
+
+
 # ============================================
 # ENDPOINT PARA SUBIR ARCHIVOS AL VAULT
 # ============================================
@@ -2232,6 +2878,49 @@ async def get_full_graph():
         return {"nodes": [], "edges": []}
 
 
+# ponytail: layout visual del grafo — posiciones guardadas por el frontend (sobreviven a refresh/dispositivos)
+LAYOUT_PATH = Path(VAULT_PATH) / "system" / "graph-layout.json"
+
+
+@app.get("/api/graph/layout")
+async def get_graph_layout():
+    """Devuelve el layout visual guardado: { positions: { node_id: {x, y, fixed} } }."""
+    if not LAYOUT_PATH.exists():
+        return {"positions": {}}
+    try:
+        with open(LAYOUT_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {"positions": {}}
+
+
+@app.post("/api/graph/layout")
+async def save_graph_layout(payload: dict):
+    """Guarda el layout visual: { positions: { node_id: {x, y, fixed} } }. POST vacío = reset."""
+    try:
+        with open(LAYOUT_PATH, "w") as f:
+            json.dump({"positions": payload.get("positions", {})}, f, ensure_ascii=False)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/raw/projects-map")
+async def raw_projects_map():
+    """Mapa archivo → proyecto escaneando vault/raw/ y vault/outputs/. Verdad del disco para colorear neuronas."""
+    result = {}
+    for base in ("raw", "outputs"):
+        root = Path(VAULT_PATH) / base
+        if not root.exists():
+            continue
+        for d in root.iterdir():
+            if d.is_dir():
+                for f in d.iterdir():
+                    if f.is_file():
+                        result[f.name] = d.name
+    return result
+
+
 @app.get("/api/graph/query")
 async def graph_query(q: str, limit: int = 10):
     """Busca nodos en graph.json por label → nodos + edges adyacentes. Para RAG del chat."""
@@ -2525,7 +3214,7 @@ Textos:{combined[:12000]}"""
     try:
         result = subprocess.run(
             ["docker", "exec", "-e", f"OPENROUTER_API_KEY={api_key}",
-             "sistema-agente", "/usr/local/lib/hermes-agent/venv/bin/hermes",
+             "sistema-agente", "hermes",
              "chat", "-q", prompt],
             capture_output=True, text=True, timeout=120
         )
@@ -2814,8 +3503,41 @@ async def get_version():
 CEREBRO_REPO = "karmaescopeta/Cerebro-Virtual"
 HERMES_REPO = "NousResearch/hermes-agent"
 
+# ponytail: cache TTL 10min — anon 60 req/h y cada check gasta ~5 llamadas
+_GH_CACHE: dict = {}
+
+def _host_git_commit() -> str:
+    """Commit corto del repo host (cerebro). '' si falla."""
+    try:
+        r = subprocess.run(["docker", "run", "--rm", "--entrypoint", "/bin/sh",
+                            "-v", f"{_REPO_BASE_DEFAULT}:/repo",
+                            "alpine/git", "-c",
+                            "git config --global --add safe.directory /repo && git -C /repo rev-parse --short HEAD"],
+                           capture_output=True, text=True, timeout=30)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+def _hermes_commit() -> str:
+    """Commit corto del checkout hermes en el sistema-agente. '' si no hay git/repo."""
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    try:
+        r = subprocess.run(["docker", "exec", f"{project}-sistema-agente-1", "sh", "-c",
+                            "d=/app/hermes-home/hermes-agent; [ -d $d ] && git -C $d rev-parse --short HEAD 2>/dev/null"],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
 def _github_latest(repo: str) -> dict | None:
-    """ponytail: sin token, 60 req/h. Returns {tag, body, date} or None."""
+    """ponytail: sin token, 60 req/h → cache TTL 10min (cada check gasta ~5). Returns {tag, body, date} or None."""
+    _hit = _GH_CACHE.get(repo)
+    if _hit and time.time() - _hit[0] < 600:
+        return _hit[1]
     _gh_tok = os.getenv("GITHUB_TOKEN", "").strip()
     if not _gh_tok and Path("/app/.env").exists():
         for _l in Path("/app/.env").read_text(encoding="utf-8").splitlines():
@@ -2832,7 +3554,9 @@ def _github_latest(repo: str) -> dict | None:
             d = r.json()
             raw_date = d.get("published_at", "")[:10]  # YYYY-MM-DD
             date = f"{raw_date[8:10]}-{raw_date[5:7]}-{raw_date[:4]}" if raw_date else ""
-            return {"tag": (d.get("tag_name", "") or "").lstrip("v"), "body": d.get("body", "")[:500], "date": date}
+            result = {"tag": (d.get("tag_name", "") or "").lstrip("v"), "body": d.get("body", "")[:500], "date": date}
+            _GH_CACHE[repo] = (time.time(), result)  # None (fallo) NO se cachea → reintento en la próxima llamada
+            return result
     except Exception:
         pass
     return None
@@ -2842,14 +3566,17 @@ def _local_cerebro_version() -> str:
     return vf.read_text().strip() if vf.exists() else "unknown"
 
 def _local_hermes_version() -> str:
-    """ponytail: read version from pyproject.toml in container. No PATH dependency."""
+    """ponytail: layout pm (2026.9+) → git describe del último tag de release (v20*),
+    fallback pyproject (imagen FHS vieja, que lee 0.0.0 en el checkout clonado)."""
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     container = f"{project}-sistema-agente-1"
     try:
         r = subprocess.run(
-            ["docker", "exec", container, "python", "-c",
-             "import re; t=open('/usr/local/lib/hermes-agent/pyproject.toml').read(); m=re.search(r'^version\\s*=\\s*\"([^\"]+)\"', t, re.M); print(m.group(1) if m else 'unknown')"],
-            capture_output=True, text=True, timeout=5)
+            ["docker", "exec", container, "sh", "-c",
+             "d=/app/hermes-home/hermes-agent; [ -d $d ] || d=/usr/local/lib/hermes-agent; "
+             "v=$(git -C $d describe --tags --abbrev=0 --match 'v20*' 2>/dev/null); "
+             "[ -n \"$v\" ] && echo ${v#v} || grep -m1 \"^version\" $d/pyproject.toml | cut -d'\"' -f2"],
+            capture_output=True, text=True, timeout=8)
         if r.returncode == 0:
             return r.stdout.strip() or "unknown"
     except Exception:
@@ -2870,10 +3597,10 @@ def _post_check_hermes() -> tuple[bool, str]:
             try:
                 h = httpx.get(AGENT_INTERNAL_URL + "/", timeout=3)
                 if h.status_code in (200, 302, 401, 403):
-                    # 3. patch needle existe?
+                    # 3. patch needle existe? (layout nuevo primero, FHS viejo de fallback)
                     p = subprocess.run(
-                        ["docker", "exec", container, "python", "-c",
-                         "from pathlib import Path; p=Path('/usr/local/lib/hermes-agent/hermes_cli/dashboard_auth/middleware.py'); print('OK' if p.exists() and 'list_session_providers()' in p.read_text() else 'MISS')"],
+                        ["docker", "exec", container, "sh", "-c",
+                         "for f in /app/hermes-home/hermes-agent/hermes_cli/dashboard_auth/middleware.py /usr/local/lib/hermes-agent/hermes_cli/dashboard_auth/middleware.py; do [ -f $f ] && grep -q 'list_session_providers()' $f && echo OK && exit 0; done; echo MISS"],
                         capture_output=True, text=True, timeout=10)
                     if p.returncode == 0 and "OK" in p.stdout:
                         return True, ""
@@ -2992,9 +3719,12 @@ def _host_env() -> dict:
     return env
 
 def _runner_common() -> list:
-    """Volúmenes + red comunes del contenedor runner docker:cli."""
+    """Volúmenes + red comunes del contenedor runner docker:cli.
+    ponytail: red con prefijo de proyecto + repo montado en la ruta que espera _build_env_for_runner."""
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     return ["--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "--network", "cerebro-network", "-e", "DOCKER_HOST=unix:///var/run/docker.sock"]
+            "-v", f"{_REPO_BASE_DEFAULT}:/run/desktop/mnt/host/c/proyectoBueno",
+            "--network", f"{project}_cerebro-network", "-e", "DOCKER_HOST=unix:///var/run/docker.sock"]
 
 def _runner_cmd(args: list, workdir: str | None, env: dict) -> list:
     """Comando docker run docker:cli. Env k=v aplicado al runner (compose lee ahí)."""
@@ -3015,39 +3745,59 @@ def _build_env_for_runner() -> dict:
 
 @app.get("/api/updates/check")
 async def check_updates():
+    # ponytail: checks bloqueantes (subprocess/httpx) → hilos en paralelo (antes ~3.4s en secuencia)
+    import asyncio
+    gh = {"cerebro": asyncio.to_thread(_github_latest, CEREBRO_REPO),
+          "hermes": asyncio.to_thread(_github_latest, HERMES_REPO),
+          "cerebro_commit": asyncio.to_thread(_host_git_commit),
+          "hermes_commit": asyncio.to_thread(_hermes_commit)}
+    img = {}
+    for cid, meta in _IMAGE_COMPONENTS.items():
+        img[cid] = asyncio.to_thread(_image_update, meta["image"])
+        if meta["repo"]:
+            img[cid + ":gh"] = asyncio.to_thread(_github_latest, meta["repo"])
+    jobs = {**gh, **img}
+    vals = await asyncio.gather(*jobs.values())
+    res = dict(zip(jobs.keys(), vals))
     cerebro_current = _local_cerebro_version()
-    cerebro_latest = _github_latest(CEREBRO_REPO)
     hermes_current = _local_hermes_version()
-    hermes_latest = _github_latest(HERMES_REPO)
+    cerebro_latest, hermes_latest = res["cerebro"], res["hermes"]
     cerebro_update = bool(cerebro_latest and cerebro_latest["tag"] != cerebro_current)
     hermes_update = bool(hermes_latest and hermes_latest["tag"] != hermes_current)
 
+    # current con commit corto (la versión exacta instalada); update se compara con la base sin commit
+    cerebro_disp = f"{cerebro_current} ({res['cerebro_commit']})" if res["cerebro_commit"] else cerebro_current
+    hermes_disp = f"{hermes_current} ({res['hermes_commit']})" if res["hermes_commit"] else hermes_current
+
     components = [
         {"id": "cerebro", "name": "Cerebro Virtual", "kind": "git",
-         "current": cerebro_current, "latest": cerebro_latest["tag"] if cerebro_latest else "unknown",
+         "current": cerebro_disp, "latest": cerebro_latest["tag"] if cerebro_latest else "unknown",
          "update": cerebro_update,
          "summary": cerebro_latest["body"] if cerebro_latest and cerebro_update else "",
-         "date": cerebro_latest["date"] if cerebro_latest and cerebro_update else "",
+         "date": cerebro_latest["date"] if cerebro_latest else "",
          "url": f"https://github.com/{CEREBRO_REPO}/releases/latest"},
         {"id": "hermes", "name": "Hermes Agent", "kind": "git",
-         "current": hermes_current, "latest": hermes_latest["tag"] if hermes_latest else "unknown",
+         "current": hermes_disp, "latest": hermes_latest["tag"] if hermes_latest else "unknown",
          "update": hermes_update,
          "summary": hermes_latest["body"] if hermes_latest and hermes_update else "",
-         "date": hermes_latest["date"] if hermes_latest and hermes_update else "",
+         "date": hermes_latest["date"] if hermes_latest else "",
          "url": f"https://github.com/{HERMES_REPO}/releases/latest"},
     ]
     for cid, meta in _IMAGE_COMPONENTS.items():
-        has, local, remote = _image_update(meta["image"])
+        has, local, remote = res[cid]
         entry = {"id": cid, "name": cid.capitalize(), "kind": "image",
                  "current": (local[:19] + "…") if local else "unknown",
                  "latest": (remote[:19] + "…") if remote else "unknown",
                  "update": has, "summary": "", "date": "", "url": ""}
         if meta["repo"]:
-            rel = _github_latest(meta["repo"])
+            rel = res[cid + ":gh"]
             if rel:
                 entry["summary"] = rel["body"] if has else ""
                 entry["date"] = rel["date"] if has else ""
                 entry["url"] = f"https://github.com/{meta['repo']}/releases/latest"
+                entry["target"] = rel["tag"]  # versión destino legible (tag del release)
+        # sin repo conocido → "Más info" al hub de la imagen (todo componente con botón)
+        entry["url"] = entry["url"] or f"https://hub.docker.com/r/{meta['image'].rsplit(':', 1)[0]}"
         components.append(entry)
     return {"components": components,
             "cerebro": {"current": cerebro_current, "latest": cerebro_latest["tag"] if cerebro_latest else "unknown",
@@ -3085,6 +3835,16 @@ def _apply_cerebro() -> dict:
         return {"success": False, "needsRollback": True, "message": f"Update aplicado pero smoke-test falló: {err}"}
     return {"success": True}
 
+def _compose_up_runner(svc: str, extra: list | None = None):
+    """up -d vía runner con env completo (_build_env_for_runner: VAULT_DIR, AGENT_CONFIG_DIR...).
+    ponytail: el backend no tiene las vars host → sin esto el compose monta /app/vault:/app/vault."""
+    renv = _build_env_for_runner()
+    cfile = renv["HOST_PROJECT_DIR"] + "/docker-compose.yml"
+    base = ["compose", "-p", renv["COMPOSE_PROJECT_NAME"], "-f", cfile]
+    args = (extra or []) + ["up", "-d", "--force-recreate", "--no-deps", svc]
+    return subprocess.run(_runner_cmd(base + args, None, renv),
+                          capture_output=True, text=True, timeout=120)
+
 def _apply_component_image(cid: str) -> dict:
     """pull + recreate con compose interno (imágenes: sin contexto de build, sin runner)."""
     meta = _IMAGE_COMPONENTS[cid]
@@ -3100,16 +3860,14 @@ def _apply_component_image(cid: str) -> dict:
                        capture_output=True, text=True, timeout=900)
     if p.returncode != 0:
         return {"success": False, "message": f"pull falló: {p.stderr[-300:]}"}
-    u = subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", meta["svc"]),
-                       capture_output=True, text=True, timeout=120)
+    u = _compose_up_runner(meta["svc"], extra)
     if u.returncode != 0:
-        return {"success": False, "message": f"up falló: {u.stderr[-300:]}"}
+        return {"success": False, "message": f"up falló: {(u.stderr or u.stdout)[-300:]}"}
     ok, err = _smoke_service(meta["svc"], meta["check_url"])
     if not ok and cur:
         # rollback automático
         subprocess.run(["docker", "tag", cur, f"{project}-{meta['svc']}:latest"], capture_output=True, timeout=10)
-        subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", meta["svc"]),
-                       capture_output=True, text=True, timeout=120)
+        _compose_up_runner(meta["svc"], extra)
         return {"success": False, "rolledBack": True, "message": f"Update falló, rollback aplicado: {err}"}
     if not ok:
         return {"success": False, "rolledBack": False, "message": f"Update falló sin rollback (sin backup): {err}"}
@@ -3143,16 +3901,14 @@ def _apply_hermes() -> dict:
                        capture_output=True, text=True, timeout=1800)
     if b.returncode != 0:
         return {"success": False, "needsRollback": True, "message": f"build falló: {b.stderr[-300:]}"}
-    u = subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"),
-                       capture_output=True, text=True, timeout=120)
+    u = _compose_up_runner("sistema-agente")
     if u.returncode != 0:
-        return {"success": False, "needsRollback": True, "message": f"up falló: {u.stderr[-300:]}"}
+        return {"success": False, "needsRollback": True, "message": f"up falló: {(u.stderr or u.stdout)[-300:]}"}
     ok, err = _post_check_hermes()
     if not ok:
         if cur:
             subprocess.run(["docker", "tag", cur, img_latest], capture_output=True, timeout=10)
-            subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"),
-                           capture_output=True, text=True, timeout=120)
+            _compose_up_runner("sistema-agente")
         return {"success": False, "needsRollback": True, "rolledBack": bool(cur),
                 "message": f"Update falló, rollback aplicado: {err}" if cur else f"Update falló: {err}"}
     return {"success": True}
@@ -3177,7 +3933,7 @@ async def rollback_hermes():
     if r.returncode != 0:
         return {"success": False, "message": "No hay backup disponible"}
     subprocess.run(["docker", "tag", img_backup, img_latest], capture_output=True, timeout=10)
-    subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"), capture_output=True, text=True, timeout=60)
+    _compose_up_runner("sistema-agente")
     return {"success": True}
 
 
@@ -3245,6 +4001,20 @@ async def localai_model_label(request: dict):
     return {"success": True}
 
 
+@app.delete("/api/localai/model")
+async def localai_model_delete(request: dict):
+    """Eliminar un modelo instalado del contenedor Ollama (ollama rm)."""
+    model = (request.get("model") or "").strip()
+    if not model or not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
+        raise HTTPException(status_code=400, detail="model inválido")
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    r = subprocess.run(["docker", "exec", f"{project}-ollama-1", "ollama", "rm", model],
+                       capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        raise HTTPException(status_code=500, detail=(r.stderr or r.stdout or "fallo al borrar").strip()[:300])
+    return {"success": True}
+
+
 @app.get("/api/localai/omniroute-key")
 async def localai_omniroute_key():
     """API key de OmniRoute (para copiar a Hermes/Ajustes)."""
@@ -3279,15 +4049,24 @@ async def omniroute_connections():
 
 
 # ponytail: prefijo proveedor requerido (los ids sin prefijo no resuelven a conexión).
-# Modelos verificados e2e 2026-09-15 vía openrouter/*.
+# Asignación aprobada por el usuario 2026-10-04 (benchmark en vivo: ver design-plans/modelos.md).
 CLOUD_COMBOS = {
-    "cerebro-default":  ["openrouter/deepseek/deepseek-v4-flash"],
-    "cerebro-smart":    ["openrouter/auto"],
-    "cerebro-cerebro":  ["openrouter/deepseek/deepseek-v4-flash"],
-    "cerebro-graphify": ["openrouter/deepseek/deepseek-v4-flash"],
+    # chat diario: frees verificados (2-3s). strategy "auto" → OmniRoute enruta solo
+    # (latencia/coste/circuit breaker); si un free rate-limitea, failover al siguiente.
+    "cerebro-default":  ["openrouter/inclusionai/ling-3.0-flash-sante:free",
+                         "openrouter/cohere/north-mini-code:free",
+                         "openrouter/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                         "openrouter/qwen/qwen3.8-27b:free-medium"],
+    "cerebro-smart":    ["openrouter/z-ai/glm-5.3-flash"],
+    "cerebro-cerebro":  ["openrouter/z-ai/glm-5.3-flash"],
+    "cerebro-investigador": ["openrouter/z-ai/glm-5.3-flash"],
+    # gpt-6-luna-pro: 23 neuronas en 43s sobre el doc más difícil, ~$0.001/doc (test comparativo 2026-10-03).
+    # v4-flash descartado en graphify: razonador → trunca el JSON de graphify → 0 neuronas (falló 5/5).
+    "cerebro-graphify": ["openrouter/openai/gpt-6-luna-pro"],
 }
+CLOUD_COMBO_STRATEGY = {"cerebro-default": "auto"}  # resto: priority (un solo modelo, da igual)
 PROFILE_TO_CLOUD = {"chat-default": "cerebro-default", "chat-smart": "cerebro-smart",
-                    "investigador": "cerebro-smart", "cerebro": "cerebro-cerebro",
+                    "investigador": "cerebro-investigador", "cerebro": "cerebro-cerebro",
                     "graphify": "cerebro-graphify"}
 PROFILE_TO_LOCAL = {"chat-default": "local-default", "chat-smart": "local-smart",
                     "investigador": "local-smart", "cerebro": "local-cerebro",
@@ -3418,7 +4197,8 @@ async def _omni_provision_combos(mode: str) -> dict:
         if name in existing:
             continue
         r = await _omni_client.post("/api/combos",
-                                    json={"name": name, "models": models, "strategy": "priority"})
+                                    json={"name": name, "models": models,
+                                          "strategy": CLOUD_COMBO_STRATEGY.get(name, "priority")})
         if r.status_code in (200, 201):
             created.append(name)
         else:
@@ -3588,3 +4368,117 @@ async def _omni_model_sync():
         if c.get("provider") == "ollama-local":
             await _omni_client.post(f"/api/providers/{c['id']}/sync-models", json={})
             return
+
+
+# ---------- Dashboard: consumo (proxy a OmniRoute) ----------
+@app.get("/api/usage/summary")
+async def usage_summary(granularity: str = "day", period: int = 30):
+    """Tokens/coste por bucket. Tokens: call-logs (timestamps crudos → bucket local).
+    Coste: analytics de OmniRoute (total + desglose proveedor, independiente del bucket).
+    ponytail: coste por hora OmniRoute no lo expone → buckets 'hour' llevan solo tokens."""
+    try:
+        login = await _omni_client.post("/api/auth/login", json={"password": _omni_password()})
+        if login.status_code != 200:
+            return {"error": "omniroute-login", "buckets": [], "total_tokens": 0, "total_cost": 0, "by_provider": []}
+        cookie = login.headers.get("set-cookie", "").split(";")[0]
+        headers = {"Cookie": cookie}
+
+        # histórico completo de analytics (365d) = totales + desglose + dailyTrend
+        a = await _omni_client.get("/api/usage/analytics?range=365d", headers=headers)
+        total_tokens, total_cost, by_provider, daily = 0, 0.0, [], {}
+        if a.status_code == 200:
+            d = a.json()
+            s = d.get("summary") or {}
+            total_tokens = s.get("totalTokens", 0)
+            total_cost = s.get("totalCost", 0.0)
+            for p in d.get("dailyTrend", []):
+                daily[p.get("date", "")[:10]] = int(p.get("totalTokens") or 0)
+        # proveedores REALMENTE registrados en OmniRoute (conexiones) — no combos/pseudo-proveedores
+        provs = []
+        try:
+            r = await _omni_client.get("/api/providers", headers=headers)
+            raw = r.json() if r.status_code == 200 else []
+            if isinstance(raw, dict):
+                raw = raw.get("connections") or []
+            provs = [(c.get("name") or c.get("provider") or "?", c.get("provider") or "") for c in raw]
+        except Exception:
+            provs = []
+        cost_by_p = {}
+        for m in (d.get("byModel", []) if a.status_code == 200 else []):
+            p = m.get("provider") or "desconocido"
+            cost_by_p[p] = cost_by_p.get(p, 0.0) + float(m.get("cost") or 0)
+        by_provider = []
+        for label, pkey in provs:
+            cost = sum(v for k, v in cost_by_p.items() if k == pkey or k.startswith(pkey) or pkey.startswith(k))
+            by_provider.append((label, cost))
+        by_provider.sort(key=lambda kv: -kv[1])
+
+        now = datetime.now()
+        buckets, labels = {}, []
+        if granularity == "hour":
+            # ponytail: call-logs solo conserva días recientes — basta para últimas 24h
+            c = await _omni_client.get("/api/usage/call-logs?limit=500", headers=headers)
+            rows = c.json() if c.status_code == 200 else []
+            if isinstance(rows, dict):
+                rows = rows.get("logs") or rows.get("items") or []
+            for i in range(24, -1, -1):
+                t = now - timedelta(hours=i)
+                k = t.strftime("%Y-%m-%d %H:00")
+                buckets[k] = {"tokens": 0}
+                labels.append(t.strftime("%H:00") if i < 24 else "")
+            for r in rows:
+                ts = r.get("timestamp") or ""
+                tk = r.get("tokens") or {}
+                k = ts[:13] + ":00"
+                if k in buckets:
+                    buckets[k]["tokens"] += int(tk.get("in") or 0) + int(tk.get("out") or 0)
+        elif granularity == "month":
+            for i in range(11, -1, -1):
+                y, m = (now.year, now.month - i) if now.month - i > 0 else (now.year - 1, now.month - i + 12)
+                k = f"{y}-{m:02d}"
+                buckets[k] = {"tokens": 0}
+                labels.append(f"{m:02d}/{y % 100}")
+            for day, v in daily.items():
+                k = day[:7]
+                if k in buckets:
+                    buckets[k]["tokens"] += v
+        else:
+            for i in range(period - 1, -1, -1):
+                t = now - timedelta(days=i)
+                k = t.strftime("%Y-%m-%d")
+                buckets[k] = {"tokens": daily.get(k, 0)}
+                labels.append(t.strftime("%d/%m"))
+        return {"total_tokens": total_tokens, "total_cost": round(total_cost, 4),
+                "by_provider": [{"provider": p, "cost": round(v, 4)} for p, v in by_provider],
+                "buckets": [{"label": lb, **buckets[k]} for k, lb in zip(buckets.keys(), labels)]}
+    except Exception as e:
+        return {"error": str(e), "buckets": [], "total_tokens": 0, "total_cost": 0, "by_provider": []}
+
+
+# ---------- Dashboard: versiones ----------
+@app.get("/api/system/versions")
+async def system_versions():
+    """Versiones de los 6 componentes. ponytail: docker exec con timeout corto; fallo → '—'."""
+    proj = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+
+    def _exec(container, cmd, shell=True):
+        try:
+            args = ["docker", "exec", f"{proj}-{container}-1"] + (["sh", "-c", cmd] if shell else cmd)
+            r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+            return (r.stdout or "").strip() or "—"
+        except Exception:
+            return "—"
+
+    def _clean(v):
+        import re
+        m = re.search(r"(\d[\w.\-+]*)", v or "")
+        return m.group(1) if m else (v or "—")
+
+    return {
+        "Sistema": "2.0.0",
+        "Hermes Agent": _clean(_local_hermes_version()),
+        "Graphify": "—",
+        "OmniRoute": _clean(_exec("omniroute", "node -e \"console.log(require('/app/package.json').version || '')\"")),
+        "Ollama": _clean(_exec("ollama", "ollama --version 2>/dev/null | head -1")),
+        "Cloudflared": _clean(_exec("cloudflared", ["cloudflared", "--version"], shell=False)),
+    }
