@@ -1,0 +1,33 @@
+name: Build Gestor de Cerebros
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            asset: GestorDeCerebros.exe
+          - os: ubuntu-latest
+            asset: GestorDeCerebros-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller
+      - run: pyinstaller --clean --noconfirm GestorDeCerebros.spec
+        working-directory: installer
+      - name: rename asset
+        shell: bash
+        run: mv installer/dist/GestorDeCerebros* "installer/dist/${{ matrix.asset }}"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: installer/dist/${{ matrix.asset }}

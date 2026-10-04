@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.2.1"
+GESTOR_VERSION = "1.3.0"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 def _find_base() -> Path:
@@ -13,7 +13,7 @@ def _find_base() -> Path:
     (proyecto descargado como hijo del exe); fallback = legacy installer/dist/."""
     frozen = getattr(sys, "frozen", False)
     start = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
-    for child in ("Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
+    for child in ("cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
         if (start / child / "docker-compose.yml").exists():
             return start / child
     for p in [start, *start.parents][:8]:
@@ -69,7 +69,7 @@ def get_used_ports():
     rc, out, _ = run(["netstat", "-an"], timeout=10)
     if rc == 0:
         for line in out.splitlines():
-            if "LISTENING" in line:
+            if "LISTENING" in line or "LISTEN" in line:  # LISTENING (Windows) / LISTEN (Linux)
                 m = re.search(r":(\d+)\s", line)
                 if m: used.add(int(m.group(1)))
     return used
@@ -190,7 +190,8 @@ def instance_create(name):
         f"BACKEND_PORT={ports['BACKEND_PORT']}\nFRONTEND_PORT={ports['FRONTEND_PORT']}\n"
         f"AGENT_PORT={ports['AGENT_PORT']}\nSEARXNG_PORT={ports['SEARXNG_PORT']}\n"
         f"OMNIROUTE_PORT={ports['OMNIROUTE_PORT']}\n"
-        f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={BASE_DIR}\\instances\\{name}\\vault\n"
+        # v1.3: VAULT_HOST_PATH con / — igual que VAULT_DIR; Docker/Windows acepta ambas, Linux necesita /
+        f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/instances/{name}/vault\n"
         f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/instances/{name}/vault\n"
         f"ENV_FILE={base_fwd}/instances/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/instances/{name}\n",
         encoding="utf-8")
@@ -234,6 +235,12 @@ def download_project():
                 if any(m.filename.startswith(("..", "/", "\\")) for m in z.infolist()):
                     raise RuntimeError("zip con rutas inseguras")
                 z.extractall(dest)
+            # v1.3: carpeta con nombre profesional — el zip trae "Cerebro-Virtual-main"
+            extracted = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
+            if extracted and extracted.name != "cerebro_virtual":
+                target = dest / "cerebro_virtual"
+                if not target.exists():
+                    extracted.rename(target)
             zpath.unlink()
             _refresh_base()
             ok = COMPOSE_FILE.exists()
@@ -354,16 +361,17 @@ _GESTOR_CHECK = {"at": 0.0, "latest": None}
 def check_requirements():
     general, per = [], []
     rc, out, _ = run(["docker", "--version"], timeout=5)
-    general.append({"name": "Docker Desktop", "ok": rc == 0, "version": out.strip(), "url": "https://docs.docker.com/desktop/install/windows-install/"})
+    general.append({"name": "Docker", "ok": rc == 0, "version": out.strip(), "url": "https://docs.docker.com/engine/install/"})
     docker_up = False
     if rc == 0:
         rc2, _, _ = run(["docker", "info"], timeout=10)
         docker_up = rc2 == 0
         general.append({"name": "Docker corriendo", "ok": rc2 == 0, "version": "", "url": ""})
     rc, out, _ = run(["git", "--version"], timeout=5)
-    general.append({"name": "Git", "ok": rc == 0, "version": out.strip(), "url": "https://git-scm.com/download/win"})
+    general.append({"name": "Git", "ok": rc == 0, "version": out.strip(), "url": "https://git-scm.com/downloads"})
     rc, out, _ = run(["python", "--version"], timeout=5)
     if rc != 0: rc, out, _ = run(["py", "--version"], timeout=5)
+    if rc != 0: rc, out, _ = run(["python3", "--version"], timeout=5)  # v1.3: Linux
     general.append({"name": "Python", "ok": rc == 0, "version": out.strip().replace("Python ", ""), "url": "https://www.python.org/downloads/"})
     ram = _ram_gb()
     general.append({"name": "RAM (8GB)", "ok": ram >= 8 or ram == 0, "version": f"{ram:.1f}GB" if ram else "", "url": ""})

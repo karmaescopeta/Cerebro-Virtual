@@ -42,9 +42,12 @@ Descargas **un solo archivo**, enciendes, y el asistente visual te pregunta lo q
 
 ### 1. Descargar el Gestor de Cerebros
 
-Ve a [Releases](https://github.com/karmaescopeta/Cerebro-Virtual/releases) y descarga **GestorDeCerebros.exe**.
+Ve a [Releases](https://github.com/karmaescopeta/Cerebro-Virtual/releases) y descarga el gestor de tu sistema:
 
-> El exe no está firmado: al abrirlo por primera vez Windows muestra SmartScreen → pulsa **"Más información" → "Ejecutar igualmente"**.
+- **Windows:** `GestorDeCerebros.exe`
+- **Linux:** `GestorDeCerebros-linux` (tras descargar: `chmod +x GestorDeCerebros-linux && ./GestorDeCerebros-linux`)
+
+> El exe de Windows no está firmado: al abrirlo por primera vez Windows muestra SmartScreen → pulsa **"Más información" → "Ejecutar igualmente"**.
 
 Doble clic. Se abre tu navegador con el gestor. Ahí verás:
 1. **Los requisitos** (Docker Desktop, etc.) — con enlaces de descarga si falta algo.

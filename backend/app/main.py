@@ -3779,9 +3779,19 @@ def _smoke_all() -> tuple[bool, str]:
             return False, f"contenedor {meta['svc']} caído"
     return _post_check_hermes()
 
-# ponytail: el repo git es C:/proyectoBueno (padre), no el proyecto. Sin dual-path el git pull
-# falla; cambiar repo → actualizar _REPO_BASE y el default.
-_REPO_BASE_DEFAULT = "C:/proyectoBueno"
+# v1.3 (re-root 2026-10-04): el repo git ES el proyecto — se deriva de VAULT_HOST_PATH:
+# stack principal <repo>/vault → repo = parent; gestor <repo>/instances/<n>/vault → 2 niveles más.
+def _repo_base() -> str:
+    vh = os.getenv("VAULT_HOST_PATH", "").replace("\\", "/").rstrip("/")
+    if not vh:
+        return os.getenv("CEREBRO_REPO_DIR", "C:/proyectoBueno/cerebro virtual")
+    p = Path(vh).parent
+    repo = p.parent.parent if p.parent.name == "instances" else p
+    return str(repo)
+
+_REPO_BASE_DEFAULT = _repo_base()
+# mapeo Docker Desktop del host en el runner (C:/x/y → /run/desktop/mnt/host/c/x/y)
+_REPO_HOST_DIR = "/run/desktop/mnt/host/c" + _REPO_BASE_DEFAULT[2:]
 
 def _host_env() -> dict:
     """Env del .env host para compose dentro del runner. Rutas absolutas Windows (no --env-file)."""
@@ -3792,8 +3802,8 @@ def _host_env() -> dict:
             if "=" in line and not line.strip().startswith("#"):
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip()
-    env.setdefault("HOST_PROJECT_DIR", "/run/desktop/mnt/host/c/proyectoBueno/cerebro virtual")
-    env.setdefault("HOST_REPO_DIR", "/run/desktop/mnt/host/c/proyectoBueno")
+    env.setdefault("HOST_PROJECT_DIR", _REPO_HOST_DIR)  # v1.3: proyecto == repo tras el re-root
+    env.setdefault("HOST_REPO_DIR", _REPO_HOST_DIR)
     return env
 
 def _runner_common() -> list:
@@ -3801,7 +3811,7 @@ def _runner_common() -> list:
     ponytail: red con prefijo de proyecto + repo montado en la ruta que espera _build_env_for_runner."""
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     return ["--rm", "-v", "/var/run/docker.sock:/var/run/docker.sock",
-            "-v", f"{_REPO_BASE_DEFAULT}:/run/desktop/mnt/host/c/proyectoBueno",
+            "-v", f"{_REPO_BASE_DEFAULT}:{_REPO_HOST_DIR}",
             "--network", f"{project}_cerebro-network", "-e", "DOCKER_HOST=unix:///var/run/docker.sock"]
 
 def _runner_cmd(args: list, workdir: str | None, env: dict) -> list:
@@ -3886,7 +3896,7 @@ async def check_updates():
                        "date": hermes_latest["date"] if hermes_latest and hermes_update else ""}}
 
 def _apply_cerebro() -> dict:
-    """git pull en host (runner alpine/git sobre repo padre C:/proyectoBueno) + rebuild backend/frontend."""
+    """git pull en el repo (runner alpine/git sobre el repo raíz) + rebuild backend/frontend."""
     env = _host_env()
     # 1. git pull --ff-only (sin stash: instalación real = working tree limpio; divergencia → error claro)
     pull = subprocess.run(
