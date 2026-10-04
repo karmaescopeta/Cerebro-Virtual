@@ -137,6 +137,11 @@ async function render() {
       <h1>Cerebro Virtual</h1>
       <button class="btn btn-primary" ${dockerOk && projReady ? '' : `disabled title="${dockerOk ? 'Descarga el proyecto primero' : 'Arranca Docker primero'}"`} onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>
     </div>
+    ${req.gestor_update ? `<div class="card" style="padding:16px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-color:var(--color-primary);">
+      <span class="material-symbols-outlined" style="color:var(--color-primary);">update</span>
+      <span style="flex:1;min-width:200px;">Hay una versión nueva del Gestor de Cerebros (${req.gestor_update.latest}). Descárgala y sustituye tu exe.</span>
+      <a class="req-link" href="${req.gestor_update.url}" target="_blank" rel="noreferrer" style="font-size:13px;"><span class="material-symbols-outlined">download</span>Descargar nueva versión</a>
+    </div>` : ''}
     ${!projReady ? `<div class="card" style="border-color:var(--color-primary);">
       <h2>Instalar Cerebro Virtual</h2>
       <p class="subtitle" style="margin-bottom:16px;">Solo tienes que hacer clic: el proyecto (~un minuto) se descarga junto a este gestor y queda listo. No hay carpetas que buscar ni nada que configurar.</p>

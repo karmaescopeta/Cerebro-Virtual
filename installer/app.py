@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Cerebro Virtual — Installer. HTTP server + browser. No deps."""
-import http.server, io, json, os, re, shutil, subprocess, sys, threading, urllib.parse, urllib.request, webbrowser, zipfile
+import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request, webbrowser, zipfile
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
+GESTOR_VERSION = "1.2.1"
+RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 def _find_base() -> Path:
     """Raíz del proyecto: buscar docker-compose.yml alrededor del exe.
@@ -329,6 +331,26 @@ def _ram_gb():
         return 0
 
 
+def _latest_gestor():
+    """Última versión publicada del gestor (cache 1h). None si no se puede saber (offline)."""
+    if time.time() - _GESTOR_CHECK["at"] < 3600:
+        return _GESTOR_CHECK["latest"]
+    latest = None
+    try:
+        req = urllib.request.Request(RELEASES_API, headers={"User-Agent": "GestorDeCerebros"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            tag = (json.loads(r.read()).get("tag_name") or "").lstrip("v")
+            if tag:
+                latest = tag
+    except Exception:
+        pass
+    _GESTOR_CHECK.update(at=time.time(), latest=latest)
+    return latest
+
+
+_GESTOR_CHECK = {"at": 0.0, "latest": None}
+
+
 def check_requirements():
     general, per = [], []
     rc, out, _ = run(["docker", "--version"], timeout=5)
@@ -355,7 +377,11 @@ def check_requirements():
         have = {"searxng/searxng", "ollama/ollama", "diegosouzapw/omniroute"} & set(out.split())
         per.append({"name": "Imágenes base", "ok": len(have) == 3,
                     "version": "ya descargadas" if len(have) == 3 else "se descargan (~3GB) en el primer inicio", "url": ""})
-    return {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists()}
+    out = {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists()}
+    latest = _latest_gestor()
+    if latest and latest != GESTOR_VERSION:
+        out["gestor_update"] = {"latest": latest, "url": "https://github.com/karmaescopeta/Cerebro-Virtual/releases/latest"}
+    return out
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -377,6 +403,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def do_GET(self):
+        global _LAST_REQ
+        _LAST_REQ = time.time()
         if self.path == "/" or self.path == "/index.html":
             p = Path(sys._MEIPASS) / "index.html" if getattr(sys, "frozen", False) else Path(__file__).parent / "index.html"
             self._html(p.read_bytes()); return
@@ -407,6 +435,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
 
     def do_POST(self):
+        global _LAST_REQ
+        _LAST_REQ = time.time()
         length = int(self.headers.get("Content-Length", 0))
         body = json.loads(self.rfile.read(length)) if length else {}
         if self.path == "/api/create":
@@ -432,11 +462,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_error(404)
 
 
+_LAST_REQ = time.time()  # auto-exit: sin peticiones HTTP = navegador cerrado
+
+
+def _idle_watchdog():
+    # ponytail: el exe no tiene ventana ni botón de salir — sin esto, cada ejecución
+    # queda viva para siempre (zombis). El frontend auto-refresca cada 5s, así que
+    # 600s sin tráfico = pestaña cerrada. Los docker compose en curso son procesos
+    # independientes: sobreviven al exit (el arranque de una instancia no se corta).
+    while True:
+        time.sleep(60)
+        if time.time() - _LAST_REQ > 600:
+            os._exit(0)
+
+
 def main():
     import socket
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=_idle_watchdog, daemon=True).start()
     threading.Thread(target=lambda: webbrowser.open(f"http://127.0.0.1:{port}"), daemon=True).start()
     server.serve_forever()
 
