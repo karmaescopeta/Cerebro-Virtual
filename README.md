@@ -36,52 +36,25 @@ Solo dos cosas, ambas gratis:
 
 ---
 
-## Instalación en 3 pasos
+## Instalación en 2 pasos
 
-Descargas, enciendes, y el asistente visual te pregunta lo que necesita. Sin editar archivos a mano.
+Descargas **un solo archivo**, enciendes, y el asistente visual te pregunta lo que necesita. Sin terminal, sin carpetas que buscar, sin editar archivos a mano.
 
-### 1. Descargar Cerebro Virtual
+### 1. Descargar el Gestor de Cerebros
 
-Necesitas tener **Git** instalado (viene con Docker Desktop en Windows, o descárgalo de https://git-scm.com/).
+Ve a [Releases](https://github.com/karmaescopeta/Cerebro-Virtual/releases) y descarga **GestorDeCerebros.exe**.
 
-Abre una terminal (en Windows: botón derecho en una carpeta → "Abrir terminal" o "Git Bash") y ejecuta:
+> El exe no está firmado: al abrirlo por primera vez Windows muestra SmartScreen → pulsa **"Más información" → "Ejecutar igualmente"**.
 
-```bash
-git clone https://github.com/karmaescopeta/Cerebro-Virtual.git
-cd Cerebro-Virtual
-```
+Doble clic. Se abre tu navegador con el gestor. Ahí verás:
+1. **Los requisitos** (Docker Desktop, etc.) — con enlaces de descarga si falta algo.
+2. La tarjeta **"Instalar Cerebro Virtual"** → pulsa el botón y el propio gestor descarga el proyecto (~un minuto). No tienes que hacer nada más.
 
-Esto baja el proyecto a tu ordenador y entra dentro de la carpeta.
+### 2. Crear tu primer cerebro
 
-### 2. Encender Cerebro Virtual
+Pulsa **"Nuevo cerebro"**, dale un nombre y dale a **Iniciar**. La primera vez tarda varios minutos (descarga las imágenes de Docker, ~3GB).
 
-**En Windows:**
-- Haz doble clic en `start.bat` (o ejecútalo desde la terminal).
-
-**En Mac / Linux:**
-```bash
-./start.sh
-```
-
-**A mano (cualquier sistema):**
-```bash
-docker compose up -d --build
-```
-
-La primera vez tarda varios minutos: descarga imágenes y construye los contenedores. Las siguientes veces es casi instantáneo. No cierres la terminal hasta que veas que terminó.
-
-### 3. Abrirlo y configurar con el asistente
-
-Ve a **http://localhost:5173** en tu navegador.
-
-La primera vez, aparece un **asistente visual** (wizard) que te guía paso a paso:
-
-1. **Te pide tu clave de OpenRouter** — la que copiaste antes (empieza por `sk-or-...`). Pégala ahí.
-2. **Nombre del agente y personalidad** — puedes dejar los valores por defecto o personalizarlos.
-3. **Modelos de IA** — qué modelo usa cada perfil. Hay valores por defecto, no tienes que cambiar nada si no quieres.
-4. **Túnel de Cloudflare (opcional)** — si quieres acceso desde el móvil, pega tu token. Si no, sáltalo.
-
-Cuando terminas, el asistente guarda todo y Cerebro Virtual queda listo. No tienes que editar ningún archivo de texto en ningún momento.
+Cuando termine, pulsa **Abrir**: aparece el asistente visual que te pide tu clave de OpenRouter, el nombre de tu agente y los modelos. Todo trae valores por defecto — solo la clave es imprescindible si quieres usar la IA.
 
 > **¿Necesitas cambiar algo después?** Ve a Ajustes (el icono de engranaje en la interfaz). Desde ahí puedes cambiar la clave, los modelos, activar/desactivar el túnel, exportar copias de seguridad, etc.
 
@@ -102,14 +75,9 @@ Una interfaz oscura (estilo Obsidian) con:
 
 ## Actualizar a una nueva versión
 
-Cuando haya cambios, actualiza así:
+Cuando hay una versión nueva, la campana de la interfaz (arriba a la derecha) te avisa: pulsa y sigue los pasos — descarga el código nuevo y reconstruye los contenedores solo.
 
-```bash
-git pull
-docker compose up -d --build
-```
-
-Tus datos del vault y tu `.env` no se tocan. Solo se actualiza el código.
+Tus datos (el vault, tus cerebros, tu `.env`) no se tocan. Solo se actualiza el código.
 
 ---
 

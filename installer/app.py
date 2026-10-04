@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Cerebro Virtual — Installer. HTTP server + browser. No deps."""
-import http.server, io, json, os, re, shutil, subprocess, sys, threading, urllib.parse, webbrowser, zipfile
+import http.server, io, json, os, re, shutil, subprocess, sys, threading, urllib.parse, urllib.request, webbrowser, zipfile
 from pathlib import Path
 
-REPO_URL = "https://github.com/karmaescopeta/Cerebro-Virtual.git"
+REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
 
 def _find_base() -> Path:
-    """Raíz del proyecto: subir desde el exe buscando docker-compose.yml.
-    ponytail: el exe puede vivir a cualquier profundidad dentro del repo clonado;
-    fallback = legacy installer/dist/ (3 niveles arriba del exe)."""
+    """Raíz del proyecto: buscar docker-compose.yml alrededor del exe.
+    ponytail: funciona incrustado en el repo (hacia arriba) o standalone
+    (proyecto descargado como hijo del exe); fallback = legacy installer/dist/."""
     frozen = getattr(sys, "frozen", False)
     start = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
+    for child in ("Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
+        if (start / child / "docker-compose.yml").exists():
+            return start / child
     for p in [start, *start.parents][:8]:
         if (p / "docker-compose.yml").exists():
             return p
@@ -20,6 +23,16 @@ BASE_DIR = _find_base()
 
 INSTANCES_DIR = BASE_DIR / "instances"
 COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
+
+
+def _refresh_base():
+    """Recalcular la raíz tras descargar el proyecto (POST /api/download-project)."""
+    global BASE_DIR, INSTANCES_DIR, COMPOSE_FILE
+    BASE_DIR = _find_base()
+    INSTANCES_DIR = BASE_DIR / "instances"
+    COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
+
+
 PORT_RANGES = {"FRONTEND_PORT": 5173, "BACKEND_PORT": 8000, "AGENT_PORT": 8080, "SEARXNG_PORT": 8888, "OMNIROUTE_PORT": 20128}
 
 # En exe windowed (console=False), sin este flag cada hijo abre una ventana CMD visible
@@ -182,6 +195,59 @@ def instance_create(name):
     return {"success": True, "ports": ports}
 
 
+def download_project():
+    """Instalación de un solo archivo: descarga el repo en zip junto al exe y lo descomprime.
+    Progreso en START_LOGS['setup'] (mismo mecanismo de polling que el arranque)."""
+    if COMPOSE_FILE.exists():
+        return {"error": "El proyecto ya está descargado"}
+    if START_LOGS.get("setup", {}).get("done") is False:
+        return {"error": "Ya se está descargando"}
+    with LOG_LOCK:
+        START_LOGS["setup"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        lines, ok = [], False
+        try:
+            dest = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else BASE_DIR
+            req = urllib.request.Request(REPO_ZIP_URL, headers={"User-Agent": "GestorDeCerebros"})
+            with urllib.request.urlopen(req, timeout=60) as r:
+                total = int(r.headers.get("Content-Length") or 0)
+                got, last = 0, -1
+                buf = io.BytesIO()
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    buf.write(chunk)
+                    got += len(chunk)
+                    pct = got * 100 // total if total else -1
+                    if pct >= last + 10:
+                        last = pct
+                        lines.append(f"Descargando... {pct}% ({got // 1048576} MB)")
+            zpath = dest / "cerebro-virtual.zip"
+            zpath.write_bytes(buf.getvalue())
+            lines.append("Descomprimiendo...")
+            with zipfile.ZipFile(zpath) as z:
+                # ponytail: zip-slip guard — descarga por HTTPS de nuestro repo, pero el guard es 1 línea
+                if any(m.filename.startswith(("..", "/", "\\")) for m in z.infolist()):
+                    raise RuntimeError("zip con rutas inseguras")
+                z.extractall(dest)
+            zpath.unlink()
+            _refresh_base()
+            ok = COMPOSE_FILE.exists()
+            lines.append(f"Proyecto listo en: {BASE_DIR}" if ok else "Error: proyecto no encontrado tras descomprimir")
+        except Exception as e:
+            lines.append(f"Error: {e}")
+        with LOG_LOCK:
+            b = START_LOGS.get("setup")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
 def compose_cmd(name, *args):
     vals = read_env(name)
     project = vals.get("COMPOSE_PROJECT_NAME", name)
@@ -289,7 +355,7 @@ def check_requirements():
         have = {"searxng/searxng", "ollama/ollama", "diegosouzapw/omniroute"} & set(out.split())
         per.append({"name": "Imágenes base", "ok": len(have) == 3,
                     "version": "ya descargadas" if len(have) == 3 else "se descargan (~3GB) en el primer inicio", "url": ""})
-    return {"general": general, "por_cerebro": per}
+    return {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists()}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -349,6 +415,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 self._json({"error": "Solo letras, números, guiones y guiones bajos"}, 400); return
             self._json(instance_create(name)); return
+        if self.path == "/api/download-project":
+            self._json(download_project()); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return

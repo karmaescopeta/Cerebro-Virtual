@@ -130,12 +130,18 @@ async function render() {
   const chip = dockerOk && faltan === 0 ? '<span class="badge badge-ok"><span class="material-symbols-outlined">check_circle</span>Todo listo</span>' : `<span class="badge badge-fail"><span class="material-symbols-outlined">warning</span>Faltan ${faltan}</span>`;
   const imBase = porCerebro.find(c => c.name === 'Imágenes base');
   if (imBase) window.__imgBaseOk = imBase.ok;
+  const projReady = req.project_ready !== false;
 
   document.getElementById('app').innerHTML = `
     <div class="header">
       <h1>Cerebro Virtual</h1>
-      <button class="btn btn-primary" ${dockerOk ? '' : 'disabled title="Arranca Docker primero"'} onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>
+      <button class="btn btn-primary" ${dockerOk && projReady ? '' : `disabled title="${dockerOk ? 'Descarga el proyecto primero' : 'Arranca Docker primero'}"`} onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>
     </div>
+    ${!projReady ? `<div class="card" style="border-color:var(--color-primary);">
+      <h2>Instalar Cerebro Virtual</h2>
+      <p class="subtitle" style="margin-bottom:16px;">Solo tienes que hacer clic: el proyecto (~un minuto) se descarga junto a este gestor y queda listo. No hay carpetas que buscar ni nada que configurar.</p>
+      <button class="btn btn-primary" onclick="setupProject()"><span class="material-symbols-outlined">download</span>Descargar Cerebro Virtual</button>
+    </div>` : ''}
     <div class="card">
       <h2>Requisitos ${chip}</h2>
       ${dockerOk ? '' : '<p class="subtitle" style="margin-bottom:14px;">Arranca Docker Desktop y espera a que la ballena esté verde — la página se refresca sola cada 5 segundos.</p>'}
@@ -175,6 +181,11 @@ async function startInst(n) {
   if (d.error) { toast(d.error, 'error'); return; }
   showLog(n);
 }
+async function setupProject() {
+  const d = await api('/api/download-project', {method:'POST'});
+  if (d.error) { toast(d.error, 'error'); return; }
+  showLog('setup');
+}
 function showLog(n) {
   logActive = true;
   let box = document.getElementById('logbox');
@@ -182,7 +193,7 @@ function showLog(n) {
     box = document.createElement('div'); box.className = 'card'; box.id = 'logbox';
     document.getElementById('app').appendChild(box);
   }
-  box.innerHTML = `<h2>Iniciando ${n}</h2>${window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div class="log-panel" id="loglines"></div>`;
+  box.innerHTML = `<h2>${n === 'setup' ? 'Descargando Cerebro Virtual' : 'Iniciando ' + n}</h2>${n !== 'setup' && window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div class="log-panel" id="loglines"></div>`;
   const poll = async () => {
     const d = await api(`/api/logs/${encodeURIComponent(n)}`);
     const el = document.getElementById('loglines');
@@ -191,7 +202,8 @@ function showLog(n) {
     el.scrollTop = el.scrollHeight;
     if (d.done) {
       logActive = false;
-      d.ok ? toast(`${n} iniciado`) : toast(`Error al iniciar ${n}`, 'error');
+      if (n === 'setup') toast(d.ok ? 'Proyecto descargado — ya puedes crear cerebros' : 'Error al descargar el proyecto', d.ok ? 'success' : 'error');
+      else d.ok ? toast(`${n} iniciado`) : toast(`Error al iniciar ${n}`, 'error');
       render();
       return;
     }
