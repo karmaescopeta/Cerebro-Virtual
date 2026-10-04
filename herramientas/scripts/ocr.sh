@@ -30,11 +30,12 @@ echo "🔍 Procesando: $BASENAME (tipo: $EXT_LOWER)"
 case "$EXT_LOWER" in
     pdf)
         echo "📄 Extrayendo texto de PDF..."
-        python -c "
-import pdfplumber
+        # audit run-1: INPUT por env var — un ' en el nombre rompía el literal y ejecutaba Python
+        PDF_INPUT="$INPUT" python -c "
+import os, pdfplumber
 import sys
 try:
-    with pdfplumber.open('$INPUT') as pdf:
+    with pdfplumber.open(os.environ['PDF_INPUT']) as pdf:
         text = ''
         for page in pdf.pages:
             page_text = page.extract_text() or ''
@@ -51,12 +52,13 @@ except Exception as e:
         ;;
     png|jpg|jpeg|bmp|tiff|tif|gif|webp)
         echo "🖼️ Ejecutando OCR en imagen..."
-        python -c "
-import pytesseract
+        # audit run-1: INPUT por env var — un ' en el nombre rompía el literal y ejecutaba Python
+        OCR_INPUT="$INPUT" python -c "
+import os, pytesseract
 from PIL import Image
 import sys
 try:
-    img = Image.open('$INPUT')
+    img = Image.open(os.environ['OCR_INPUT'])
     text = pytesseract.image_to_string(img, lang='spa+eng')
     print(text, end='')
 except Exception as e:

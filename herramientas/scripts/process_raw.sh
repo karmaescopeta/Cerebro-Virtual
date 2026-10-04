@@ -44,10 +44,11 @@ case "$EXT_LOWER" in
     mp3|wav|m4a|aac|ogg|flac|wma)
         echo "🎵 Archivo de audio detectado → transcribiendo con Whisper..."
         # Para audio, saltamos la extracción de audio de FFmpeg y transcribimos directamente
-        python -c "
-import whisper
-model = whisper.load_model('$MODEL')
-result = model.transcribe('$INPUT')
+        # audit run-1: INPUT/MODEL por env var — un ' en el nombre rompía el literal y ejecutaba Python
+        WHISPER_INPUT="$INPUT" WHISPER_MODEL="$MODEL" python -c "
+import os, whisper
+model = whisper.load_model(os.environ['WHISPER_MODEL'])
+result = model.transcribe(os.environ['WHISPER_INPUT'])
 print(result['text'], end='')
 " > "$OUTPUT"
         echo "✅ Transcripción guardada en: $OUTPUT"

@@ -28,10 +28,11 @@ echo "🎬 Extrayendo audio de: $BASENAME"
 ffmpeg -y -i "$INPUT" -vn -acodec pcm_s16le -ar 16000 -ac 1 "$AUDIO" 2>/dev/null
 
 echo "📝 Transcribiendo con Whisper (modelo: $MODEL)..."
-python -c "
-import whisper
-model = whisper.load_model('$MODEL')
-result = model.transcribe('$AUDIO')
+# audit run-1: AUDIO/MODEL por env var — un ' en el nombre rompía el literal y ejecutaba Python
+WHISPER_AUDIO="$AUDIO" WHISPER_MODEL="$MODEL" python -c "
+import os, whisper
+model = whisper.load_model(os.environ['WHISPER_MODEL'])
+result = model.transcribe(os.environ['WHISPER_AUDIO'])
 print(result['text'], end='')
 " > "$TRANSCRIPT"
 

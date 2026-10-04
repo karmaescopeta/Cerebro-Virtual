@@ -2,8 +2,10 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import FastAPI, HTTPException, File, UploadFile, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
+from html import escape
 import os
 import json
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 import httpx
@@ -39,13 +41,71 @@ AGENT_INTERNAL_URL = os.getenv("AGENT_INTERNAL_URL", "http://sistema-agente:8080
 
 # ponytail: servir archivos del vault (imagenes para preview en chat)
 from fastapi.staticfiles import StaticFiles
+
+class _VaultStatic(StaticFiles):
+    # audit run-1: system/ lleva credenciales — misma política de exclusión que el export (SENSITIVE)
+    BLOCKED_FIRST_SEGMENT = {"system"}
+
+    async def get_response(self, path: str, scope):
+        first = path.split("/")[0] if path else ""
+        if first in self.BLOCKED_FIRST_SEGMENT:
+            raise HTTPException(status_code=404)
+        return await super().get_response(path, scope)
+
 if Path(VAULT_PATH).exists():
-    app.mount("/vault-static", StaticFiles(directory=VAULT_PATH), name="vault-static")
+    app.mount("/vault-static", _VaultStatic(directory=VAULT_PATH), name="vault-static")
 
 
 # ============================================
 # FUNCIONES AUXILIARES
 # ============================================
+
+# ---- audit run-1 (security): helpers compartidos ----
+
+def _confine(category: str, *segments: str) -> Path:
+    """Confinar ruta bajo VAULT_PATH/<category>/ — mismo patrón que update_vault_file."""
+    base = (Path(VAULT_PATH) / category).resolve()
+    target = base.joinpath(*segments).resolve()
+    if not str(target).startswith(str(base) + os.sep) and target != base:
+        raise HTTPException(status_code=400, detail="Path inválido")
+    return target
+
+def _confine_vault(*segments: str) -> Path:
+    """Confinar ruta bajo VAULT_PATH (raíz) — para paths relativos al vault con categoría incluida."""
+    base = Path(VAULT_PATH).resolve()
+    target = base.joinpath(*segments).resolve()
+    if not str(target).startswith(str(base) + os.sep) and target != base:
+        raise HTTPException(status_code=400, detail="Path inválido")
+    return target
+
+def _safe_env_kv(key: str, value: str, allow_eq: bool = False):
+    """audit run-1: newline en key/value forjaba lineas de .env enteras."""
+    import string as _string
+    if not all(c in _string.ascii_letters + _string.digits + "_" for c in key):
+        raise HTTPException(status_code=400, detail="clave no permitida")
+    forbidden = set(map(chr, range(32)))  # todo control char, incl. CR y LF
+    if not allow_eq:
+        forbidden.add("=")
+    if any(c in forbidden for c in value):
+        raise HTTPException(status_code=400, detail="caracteres no permitidos")
+    return key, value
+
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,120}$")
+
+def _validate_models(new_models) -> None:
+    """audit run-1: models llega a un sed en install_profiles.sh — whitelist de model-id."""
+    if not isinstance(new_models, dict):
+        raise HTTPException(status_code=400, detail="models debe ser un objeto")
+    for k, v in new_models.items():
+        if not isinstance(v, str) or (v and not _MODEL_ID_RE.match(v)):
+            raise HTTPException(status_code=400, detail=f"Modelo inválido: {k}")
+
+_GRAPH_LOCK = threading.RLock()  # audit run-1: 7 escritores de graph.json en 3 contextos concurrentes
+
+def _atomic_dump(path: Path, obj) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
 
 def get_agent_keys():
     if AGENT_KEYS_PATH.exists():
@@ -481,34 +541,35 @@ def _merge_graph(partial: dict, source_file: str) -> None:
     """Merge graph parcial de Graphify con graph.json global del vault."""
     if not partial or "nodes" not in partial:
         return
-    # ponytail: cargar graph global, añadir source_file a cada nodo, merge, guardar
-    existing = {"nodes": [], "edges": []}
-    if GRAPH_PATH.exists():
-        try:
-            with open(GRAPH_PATH) as f:
-                existing = json.load(f)
-        except Exception:
-            pass
+    # audit run-1: lock — 7 escritores en 3 contextos pisaban el archivo; parse-failure ≠ grafo vacío
+    with _GRAPH_LOCK:
+        existing = {"nodes": [], "edges": []}
+        if GRAPH_PATH.exists():
+            try:
+                with open(GRAPH_PATH) as f:
+                    existing = json.load(f)
+            except Exception:
+                print("⚠️ graph.json ilegible — merge abortado para no borrar el conocimiento (audit run-1)")
+                return
 
-    # tag nodos con source_file
-    for n in partial.get("nodes", []):
-        if "source_file" not in n:
-            n["source_file"] = source_file
+        # tag nodos con source_file
+        for n in partial.get("nodes", []):
+            if "source_file" not in n:
+                n["source_file"] = source_file
 
-    # ponytail: dedup por id — si un nodo con mismo id+source_file ya existe, reemplazar
-    existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
-    new_nodes = [n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids]
-    existing["nodes"].extend(new_nodes)
+        # ponytail: dedup por id — si un nodo con mismo id+source_file ya existe, reemplazar
+        existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
+        new_nodes = [n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids]
+        existing["nodes"].extend(new_nodes)
 
-    # edges: dedup por (source, target, relation)
-    existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
-    new_edges = [e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges]
-    existing["edges"].extend(new_edges)
+        # edges: dedup por (source, target, relation)
+        existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
+        new_edges = [e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges]
+        existing["edges"].extend(new_edges)
 
-    GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(GRAPH_PATH, "w") as f:
-        json.dump(existing, f, ensure_ascii=False)
-    _record_graphed(source_file)
+        GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_dump(GRAPH_PATH, existing)
+        _record_graphed(source_file)
 
 # fase 3 visor-md: meta de qué archivo fue grafiado y cuándo — alimenta el icono "modificado" del visor
 def _resolve_vault_file(name: str):
@@ -524,12 +585,15 @@ def _record_graphed(source_file: str) -> None:
         if not f:
             return
         meta_path = GRAPH_PATH.parent / "graph-meta.json"
-        meta = {}
-        if meta_path.exists():
-            try: meta = json.load(open(meta_path))
-            except Exception: meta = {}
-        meta[source_file] = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        with _GRAPH_LOCK:  # audit run-1: meta RMW sin lock
+            meta = {}
+            if meta_path.exists():
+                try: meta = json.load(open(meta_path))
+                except Exception:
+                    print("⚠️ graph-meta.json ilegible — registro abortado (audit run-1)")
+                    return
+            meta[source_file] = datetime.fromtimestamp(f.stat().st_mtime).isoformat()
+            _atomic_dump(meta_path, meta)
     except Exception as e:
         print(f"⚠️ _record_graphed: {e}")
 
@@ -539,15 +603,15 @@ def _prune_graph_json(source_file: str) -> None:
     if not GRAPH_PATH.exists():
         return
     try:
-        with open(GRAPH_PATH) as f:
-            graph = json.load(f)
-        before = len(graph.get("nodes", []))
-        graph["nodes"] = [n for n in graph.get("nodes", []) if n.get("source_file") != source_file]
-        valid_ids = {n["id"] for n in graph["nodes"]}
-        graph["edges"] = [e for e in graph.get("edges", [])
-                          if e.get("source") in valid_ids and e.get("target") in valid_ids]
-        with open(GRAPH_PATH, "w") as f:
-            json.dump(graph, f, ensure_ascii=False)
+        with _GRAPH_LOCK:  # audit run-1: RMW sin lock + no atómico
+            with open(GRAPH_PATH) as f:
+                graph = json.load(f)
+            before = len(graph.get("nodes", []))
+            graph["nodes"] = [n for n in graph.get("nodes", []) if n.get("source_file") != source_file]
+            valid_ids = {n["id"] for n in graph["nodes"]}
+            graph["edges"] = [e for e in graph.get("edges", [])
+                              if e.get("source") in valid_ids and e.get("target") in valid_ids]
+            _atomic_dump(GRAPH_PATH, graph)
         pruned = before - len(graph["nodes"])
         if pruned:
             print(f"🧹 Graphify: pruned {pruned} nodes for {source_file}")
@@ -560,23 +624,23 @@ def _sync_graph_json() -> None:
     if not GRAPH_PATH.exists():
         return
     try:
-        with open(GRAPH_PATH) as f:
-            graph = json.load(f)
-        existing_files = set()
-        for category in ("raw", "outputs"):
-            cat_path = Path(VAULT_PATH) / category
-            if cat_path.exists():
-                for f_ in cat_path.rglob("*"):
-                    if f_.is_file() and f_.name != ".gitkeep" and ".processed" not in str(f_):
-                        existing_files.add(f_.name)
-        before = len(graph.get("nodes", []))
-        graph["nodes"] = [n for n in graph.get("nodes")
-                          if n.get("source_file") in existing_files or not n.get("source_file")]
-        valid_ids = {n["id"] for n in graph["nodes"]}
-        graph["edges"] = [e for e in graph.get("edges", [])
-                          if e.get("source") in valid_ids and e.get("target") in valid_ids]
-        with open(GRAPH_PATH, "w") as f:
-            json.dump(graph, f, ensure_ascii=False)
+        with _GRAPH_LOCK:  # audit run-1: RMW sin lock + no atómico
+            with open(GRAPH_PATH) as f:
+                graph = json.load(f)
+            existing_files = set()
+            for category in ("raw", "outputs"):
+                cat_path = Path(VAULT_PATH) / category
+                if cat_path.exists():
+                    for f_ in cat_path.rglob("*"):
+                        if f_.is_file() and f_.name != ".gitkeep" and ".processed" not in str(f_):
+                            existing_files.add(f_.name)
+            before = len(graph.get("nodes", []))
+            graph["nodes"] = [n for n in graph["nodes"]
+                              if n.get("source_file") in existing_files or not n.get("source_file")]
+            valid_ids = {n["id"] for n in graph["nodes"]}
+            graph["edges"] = [e for e in graph.get("edges", [])
+                              if e.get("source") in valid_ids and e.get("target") in valid_ids]
+            _atomic_dump(GRAPH_PATH, graph)
         pruned = before - len(graph["nodes"])
         if pruned:
             print(f"🧹 Graphify: synced (pruned {pruned} orphan nodes)")
@@ -1458,7 +1522,7 @@ async def save_output(req: SaveOutputRequest):
     if not safe_name:
         safe_name = f"doc-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
 
-    out_dir = Path(VAULT_PATH) / "outputs" / req.project_id
+    out_dir = _confine("outputs", req.project_id)  # audit run-1: project_id sin confinar cruzaba mounts
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"{safe_name}.md"
 
@@ -1513,27 +1577,28 @@ def _replace_graph(partial: dict, source_file: str) -> None:
     # ponytail: extracto vacío NO purga — un reintentó de graphify sin nodos no puede borrar el conocimiento
     if not partial or not partial.get("nodes"):
         return
-    existing = {"nodes": [], "edges": []}
-    if GRAPH_PATH.exists():
-        try:
-            with open(GRAPH_PATH) as f:
-                existing = json.load(f)
-        except Exception:
-            pass
-    # purga: nodos/edges de ESTE source_file (los sin source_file = sistema, quedan)
-    existing["nodes"] = [n for n in existing["nodes"] if n.get("source_file") != source_file]
-    existing["edges"] = [e for e in existing["edges"] if e.get("source_file") != source_file]
-    # re-inserta con los mismos tags y dedups que _merge_graph
-    for n in partial.get("nodes", []):
-        if "source_file" not in n:
-            n["source_file"] = source_file
-    existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
-    existing["nodes"].extend([n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids])
-    existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
-    existing["edges"].extend([e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges])
-    GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(GRAPH_PATH, "w", encoding="utf-8") as f:
-        json.dump(existing, f, ensure_ascii=False, indent=2)
+    with _GRAPH_LOCK:  # audit run-1: lock + atomic — RMW desde threadpool pisaba el event loop/daemons
+        existing = {"nodes": [], "edges": []}
+        if GRAPH_PATH.exists():
+            try:
+                with open(GRAPH_PATH) as f:
+                    existing = json.load(f)
+            except Exception:
+                print("⚠️ graph.json ilegible — replace abortado para no borrar el conocimiento (audit run-1)")
+                return
+        # purga: nodos/edges de ESTE source_file (los sin source_file = sistema, quedan)
+        existing["nodes"] = [n for n in existing["nodes"] if n.get("source_file") != source_file]
+        existing["edges"] = [e for e in existing["edges"] if e.get("source_file") != source_file]
+        # re-inserta con los mismos tags y dedups que _merge_graph
+        for n in partial.get("nodes", []):
+            if "source_file" not in n:
+                n["source_file"] = source_file
+        existing_ids = {(n.get("id"), n.get("source_file")) for n in existing["nodes"]}
+        existing["nodes"].extend([n for n in partial["nodes"] if (n.get("id"), n.get("source_file")) not in existing_ids])
+        existing_edges = {(e.get("source"), e.get("target"), e.get("relation")) for e in existing["edges"]}
+        existing["edges"].extend([e for e in partial.get("edges", []) if (e.get("source"), e.get("target"), e.get("relation")) not in existing_edges])
+        GRAPH_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_dump(GRAPH_PATH, existing)
     _record_graphed(source_file)
 
 
@@ -1997,6 +2062,10 @@ async def update_profiles_models(request: dict):
     old_models = config.get("models", {})
     old_models_local = config.get("modelsLocal") or {}
 
+    _validate_models(new_models)  # audit run-1: models sin validar → sed e en install_profiles.sh
+    if isinstance(new_models_local, dict):
+        _validate_models(new_models_local)
+
     config["models"] = new_models
     if new_models_local:
         config["modelsLocal"] = new_models_local
@@ -2112,7 +2181,7 @@ async def agent_start():
 @app.get("/api/agent/status", response_class=HTMLResponse)
 async def agent_status_page():
     config = get_agent_config()
-    agent_name = config.get("agentName", "Hermes") if config else "Hermes"
+    agent_name = escape(config.get("agentName", "Hermes") if config else "Hermes", quote=True)  # audit run-1: XSS almacenado
     is_configured = config is not None
 
     html_content = f"""
@@ -2189,7 +2258,7 @@ async def agent_status_page():
                 </span>
             </div>
             <div style="margin-top: 1rem; color: #6b7280; font-size: 0.875rem;">
-                {f'Configurado el: {config.get("createdAt", "desconocido")[:10]}' if is_configured else 'Completa el wizard para configurar el agente.'}
+                {f'Configurado el: {escape(str(config.get("createdAt", "desconocido"))[:10], quote=True)}' if is_configured else 'Completa el wizard para configurar el agente.'}
             </div>
             <a href="http://localhost:5173" class="btn">🎯 Ir al Cerebro Virtual</a>
         </div>
@@ -2228,6 +2297,7 @@ async def configure_agent(request: dict):
         discord_token = request.get("discordToken", "").strip()
         whatsapp_phone = request.get("whatsappPhone", "").strip()
         models = request.get("models", {})
+        _validate_models(models)  # audit run-1: models sin validar → sed e en install_profiles.sh
         cloudflare_token = _extract_tunnel_token(request.get("cloudflareTunnelToken", "").strip())
 
         if not agent_name:
@@ -2386,7 +2456,7 @@ async def import_vault(file: UploadFile = File(...)):
 
         # Extraer a temp primero
         temp_dir = Path(tempfile.mkdtemp())
-        tar.extractall(str(temp_dir))
+        tar.extractall(str(temp_dir), filter="data")  # audit run-1: sin filtro, members ../ escribían fuera del temp
         tar.close()
 
         # Validar estructura
@@ -2456,8 +2526,9 @@ async def reset_vault():
         d.mkdir(parents=True, exist_ok=True)
     (vault / "system" / "index.json").write_text(
         json.dumps({"version": "2.0.0", "lastIndexed": None, "pages": []}), encoding="utf-8")
-    (vault / "system" / "graph.json").write_text(
-        json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+    with _GRAPH_LOCK:  # audit run-1: reset también pasa por el lock del grafo
+        (vault / "system" / "graph.json").write_text(
+            json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
     gt = vault / "system" / "graphify-tmp"
     if gt.exists():
         shutil.rmtree(str(gt))
@@ -2476,7 +2547,7 @@ async def upload_to_vault(file: UploadFile = File(...), project: str = "individu
     dest_folder = project or topic or "individual"
     import shutil as shutil_mod
 
-    raw_path = Path(VAULT_PATH) / "raw" / dest_folder
+    raw_path = _confine("raw", dest_folder)  # audit run-1: project/topic sin confinar cruzaba mounts
     raw_path.mkdir(parents=True, exist_ok=True)
 
     filename = file.filename or "unnamed"
@@ -2696,7 +2767,8 @@ async def rename_vault_item(req: RenameRequest):
 
     old_name = target.name
     old_stem = target.stem
-    new_path = target.parent / req.newName
+    rel_parent = target.parent.relative_to(base)
+    new_path = _confine(req.category, *rel_parent.parts, req.newName)  # audit run-1: newName sin confinar reemplazaba vault/system
     target.rename(new_path)
 
     # .txt hermano (raw)
@@ -2712,13 +2784,13 @@ async def rename_vault_item(req: RenameRequest):
     # graph.json: actualizar source_file
     if GRAPH_PATH.exists():
         try:
-            with open(GRAPH_PATH) as f:
-                graph = json.load(f)
-            for n in graph.get("nodes", []):
-                if n.get("source_file") == old_name:
-                    n["source_file"] = req.newName
-            with open(GRAPH_PATH, "w") as f:
-                json.dump(graph, f, ensure_ascii=False)
+            with _GRAPH_LOCK:  # audit run-1: RMW sin lock
+                with open(GRAPH_PATH) as f:
+                    graph = json.load(f)
+                for n in graph.get("nodes", []):
+                    if n.get("source_file") == old_name:
+                        n["source_file"] = req.newName
+                _atomic_dump(GRAPH_PATH, graph)
         except Exception as e:
             print(f"⚠️ rename graph update error: {e}")
 
@@ -2754,7 +2826,7 @@ async def reassign_files(req: ReassignRequest):
         if req.targetProject == "individual":
             dst_dir = base
         else:
-            dst_dir = base / req.targetProject
+            dst_dir = _confine(cat, req.targetProject)  # audit run-1: targetProject sin confinar
             dst_dir.mkdir(parents=True, exist_ok=True)
         dst = dst_dir / fname
         if dst.exists():
@@ -3083,8 +3155,10 @@ async def process_raw_file(request: dict):
     file_path = request.get("path", "")
     if not file_path:
         raise HTTPException(status_code=400, detail="Falta 'path' del archivo")
+    if file_path.split("/")[0] not in ("raw", "outputs"):
+        raise HTTPException(status_code=400, detail="Solo se procesan archivos de raw/ o outputs/")
 
-    raw_file = Path(VAULT_PATH) / file_path
+    raw_file = _confine_vault(file_path)  # audit run-1: path sin confinar aceptaba system/
     if not raw_file.exists():
         raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {file_path}")
 
@@ -3165,8 +3239,10 @@ async def process_folder(request: dict):
     folder_path = request.get("path", "")
     if not folder_path:
         raise HTTPException(status_code=400, detail="Falta 'path' de la carpeta")
+    if folder_path.split("/")[0] not in ("raw", "outputs"):
+        raise HTTPException(status_code=400, detail="Solo se procesan carpetas de raw/ o outputs/")
 
-    folder = Path(VAULT_PATH) / folder_path
+    folder = _confine_vault(folder_path)  # audit run-1: path sin confinar
     if not folder.exists() or not folder.is_dir():
         raise HTTPException(status_code=404, detail=f"Carpeta no encontrada: {folder_path}")
 
@@ -3296,6 +3372,7 @@ def _extract_tunnel_token(raw: str) -> str:
 
 def _update_env_token(token: str):
     """Write CLOUDFLARE_TUNNEL_TOKEN to /app/.env (mounted from host .env)."""
+    _safe_env_kv("CLOUDFLARE_TUNNEL_TOKEN", token, allow_eq=True)  # audit run-1: newline forjaba líneas .env
     env_path = Path("/app/.env")
     if not env_path.exists():
         return
@@ -3465,6 +3542,7 @@ async def update_label(request: dict):
     label = request.get("label", "").strip()
     if not service:
         raise HTTPException(status_code=400, detail="service requerido")
+    _safe_env_kv(f"ROUTE_LABEL_{service}", label)  # audit run-1: newline en service/label forjaba líneas .env
     env_path = Path("/app/.env")
     if not env_path.exists():
         raise HTTPException(status_code=500, detail=".env no encontrado")
@@ -3865,10 +3943,14 @@ def _apply_component_image(cid: str) -> dict:
         return {"success": False, "message": f"up falló: {(u.stderr or u.stdout)[-300:]}"}
     ok, err = _smoke_service(meta["svc"], meta["check_url"])
     if not ok and cur:
-        # rollback automático
-        subprocess.run(["docker", "tag", cur, f"{project}-{meta['svc']}:latest"], capture_output=True, timeout=10)
+        # audit run-1: retaggear al nombre de imagen que compose resuelve y VERIFICAR antes de reportar
+        subprocess.run(["docker", "tag", cur, meta["image"]], capture_output=True, timeout=10)
         _compose_up_runner(meta["svc"], extra)
-        return {"success": False, "rolledBack": True, "message": f"Update falló, rollback aplicado: {err}"}
+        chk = subprocess.run(["docker", "inspect", "--format", "{{.Image}}", f"{project}-{meta['svc']}-1"],
+                              capture_output=True, text=True, timeout=10)
+        rolled = chk.returncode == 0 and chk.stdout.strip() == cur
+        return {"success": False, "rolledBack": rolled,
+                "message": f"Update falló, rollback aplicado: {err}" if rolled else f"Update falló, rollback NO aplicado: {err}"}
     if not ok:
         return {"success": False, "rolledBack": False, "message": f"Update falló sin rollback (sin backup): {err}"}
     return {"success": True}
@@ -4311,8 +4393,11 @@ async def ollama_terminal(ws: WebSocket, container: str):
     try:
         while True:
             data = await ws.receive_text()
-            parts = data.strip().split()
-            if parts and parts[0] in _OLLAMA_BAN:
+            # audit run-1: blocklist de primer token era evadible (sh -c, command, /bin/rm, env)
+            # → allowlist de comando + rechazo de metacaracteres que sh interpretaría
+            stripped = data.strip()
+            if stripped and (not re.fullmatch(r"(ollama|omniroute)(\s+[A-Za-z0-9._:/-]+)*", stripped)
+                             or re.search(r"[;|&$`<>]", data)):
                 await ws.send_text("\n[comando bloqueado por seguridad]\n")
                 continue
             proc.stdin.write((data + "\n").encode())
