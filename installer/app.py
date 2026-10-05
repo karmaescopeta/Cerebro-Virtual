@@ -419,7 +419,8 @@ def set_base(path_str):
     base = p if (p / "docker-compose.yml").exists() else next(
         (c for c in p.iterdir() if c.is_dir() and (c / "docker-compose.yml").exists()), None)
     if base is None:
-        return {"error": f"No encuentro el sistema en {p} (docker-compose.yml ni ahí ni un nivel abajo)"}
+        return {"error": f"En {p} no hay ningún sistema instalado (busco su archivo de configuración ahí y un nivel abajo). "
+                         f"Si lo que quieres es TRAER tu sistema a esta carpeta, usa el botón «Mover todo a otra carpeta»"}
     try:
         _config_file().write_text(json.dumps({"base": str(base)}), encoding="utf-8")
     except Exception as e:
@@ -525,6 +526,18 @@ def pick_folder():
     return {"error": "No hay selector de carpetas en este equipo — usa el explorador de la ventana"}
 
 
+def _move_except(src, dst, exe):
+    """Mover todo src→dst salvo el exe bloqueado (baja por las carpetas que lo contienen)."""
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        if exe is not None and item.resolve() == exe:
+            continue  # el exe en ejecución está bloqueado por Windows — se queda y sigue funcionando
+        if exe is not None and exe.is_relative_to(item.resolve()):
+            _move_except(item, dst / item.name, exe)  # la carpeta que contiene el exe se mueve por dentro
+        else:
+            shutil.move(str(item), str(dst / item.name))
+
+
 def relocate(dest_str):
     """v1.4: mudar TODO el sistema (la carpeta gestor_de_cerebros con todos los cerebros) a otra
     carpeta/disco. Para los cerebros encendidos, mueve todo y vuelve a encenderlos. Log en START_LOGS['relocate']."""
@@ -552,10 +565,9 @@ def relocate(dest_str):
         return {"error": f"No puedo revisar {target}: {e}"}
     try:
         exe = Path(sys.executable).resolve()
-        if exe == Path(BASE_DIR).resolve() or exe.is_relative_to(Path(BASE_DIR).resolve()):
-            return {"error": "El gestor no puede vivir DENTRO de la carpeta del sistema — saca el exe fuera primero"}
     except Exception:
-        pass
+        exe = None
+    exe_inside = bool(exe and exe.is_relative_to(Path(BASE_DIR).resolve()))
     with LOG_LOCK:
         START_LOGS["relocate"] = {"lines": [], "done": False, "ok": False}
 
@@ -569,15 +581,15 @@ def relocate(dest_str):
                     cmd, env = compose_cmd(name, "stop")
                     run(cmd, timeout=120)
             lines.append(f"Mudando todo el sistema a {target} (puede tardar si hay muchos archivos)...")
-            # ponytail: mover entrada a entrada (no shutil.move del árbol) — target puede existir
-            # y shutil.move(dir, dir_existente) metería el sistema un nivel más abajo
-            target.mkdir(parents=True, exist_ok=True)
-            for item in Path(BASE_DIR).iterdir():
-                shutil.move(str(item), str(target / item.name))
+            # ponytail: entrada a entrada, no shutil.move del árbol — target puede existir y
+            # shutil.move(dir, dir_existente) metería el sistema un nivel más abajo
+            _move_except(Path(BASE_DIR), target, exe if exe_inside else None)
+            if exe_inside:
+                lines.append(f"El gestor se queda donde está ({exe}) — el resto se muda y sigue funcionando igual.")
             try:
                 Path(BASE_DIR).rmdir()  # cosmético — si algo la deja ocupada, no debe romper el registro
             except OSError:
-                lines.append(f"Nota: no pude borrar la carpeta vieja vacía ({BASE_DIR}) — bórrala tú si quieres")
+                lines.append(f"Nota: la carpeta vieja ({BASE_DIR}) conserva solo el gestor — copia el gestor donde prefieras y bórrala")
             _config_file().write_text(json.dumps({"base": str(target)}), encoding="utf-8")
             _refresh_base()
             _rewrite_envs()
