@@ -288,7 +288,7 @@ function confirmDockerMove() {
 }
 async function confirmRelocate() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>Mudar todo el sistema a otra carpeta o disco</h2><p class="subtitle" style="margin-bottom:16px;">Se mudará la carpeta completa del sistema (<span style="font-family:var(--font-mono);">${window.__base || ''}</span>) con TODOS tus cerebros y sus archivos. Los cerebros encendidos se apagan un momento y se vuelven a encender solos al acabar.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="rgo">Elegir carpeta nueva</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>Mudar todo el sistema a otra carpeta</h2><p class="subtitle" style="margin-bottom:16px;">Eliges la carpeta nueva (puedes crearla en el explorador) y <b>esa carpeta pasará a ser la del sistema</b>: dentro quedarán el sistema y todos tus cerebros, cada uno en su carpeta con sus archivos. Los cerebros encendidos se apagan un momento y se vuelven a encender solos al acabar.<br><br>Importante: el gestor (este programa) no puede estar dentro de la carpeta que se muda — si lo tienes dentro, cópialo primero al escritorio y ábrelo desde ahí.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="rgo">Elegir carpeta nueva</button></div></div>`;
   document.body.appendChild(m);
   m.querySelector('#rgo').onclick = async () => {
     m.remove();

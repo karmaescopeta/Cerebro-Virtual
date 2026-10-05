@@ -535,11 +535,21 @@ def relocate(dest_str):
     dest = Path((dest_str or "").strip())
     if not str(dest) or not dest.is_absolute():
         return {"error": "Carpeta no válida"}
-    target = dest / BASE_DIR.name
+    target = dest  # v1.4.1: la carpeta elegida ES la nueva carpeta del sistema (gestor_de_cerebros con todo dentro)
     if target.resolve() == Path(BASE_DIR).resolve():
         return {"error": "El sistema ya está en esa carpeta"}
-    if target.exists():
-        return {"error": f"Ya existe {target} — elige otra carpeta o bórrala"}
+    if str(target) == str(target.anchor):
+        return {"error": "Elige (o crea) una carpeta concreta, no la raíz del disco"}
+    if (target / "docker-compose.yml").exists():
+        return {"error": f"En {target} ya hay un sistema instalado — elige otra carpeta"}
+    try:
+        base_names = {p.name for p in Path(BASE_DIR).iterdir()}
+        if target.exists():
+            clash = base_names & {p.name for p in target.iterdir()}
+            if clash:
+                return {"error": f"En {target} ya existe: {', '.join(sorted(clash)[:5])} — elige una carpeta vacía o con otro nombre"}
+    except OSError as e:
+        return {"error": f"No puedo revisar {target}: {e}"}
     try:
         exe = Path(sys.executable).resolve()
         if exe == Path(BASE_DIR).resolve() or exe.is_relative_to(Path(BASE_DIR).resolve()):
@@ -559,8 +569,15 @@ def relocate(dest_str):
                     cmd, env = compose_cmd(name, "stop")
                     run(cmd, timeout=120)
             lines.append(f"Mudando todo el sistema a {target} (puede tardar si hay muchos archivos)...")
-            dest.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(BASE_DIR), str(target))
+            # ponytail: mover entrada a entrada (no shutil.move del árbol) — target puede existir
+            # y shutil.move(dir, dir_existente) metería el sistema un nivel más abajo
+            target.mkdir(parents=True, exist_ok=True)
+            for item in Path(BASE_DIR).iterdir():
+                shutil.move(str(item), str(target / item.name))
+            try:
+                Path(BASE_DIR).rmdir()  # cosmético — si algo la deja ocupada, no debe romper el registro
+            except OSError:
+                lines.append(f"Nota: no pude borrar la carpeta vieja vacía ({BASE_DIR}) — bórrala tú si quieres")
             _config_file().write_text(json.dumps({"base": str(target)}), encoding="utf-8")
             _refresh_base()
             _rewrite_envs()
@@ -572,6 +589,8 @@ def relocate(dest_str):
                     instance_start(name)
         except Exception as e:
             lines.append(f"Error: {e}")
+            if not ok:
+                lines.append(f"Si algo quedó a medias, lo que ya se movió está en {target} — no borres nada")
         with LOG_LOCK:
             b = START_LOGS.get("relocate")
             if b is not None:
