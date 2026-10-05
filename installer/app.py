@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.4.0"
+GESTOR_VERSION = "1.4.1"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 IS_WIN = os.name == "nt"
@@ -42,7 +42,9 @@ def _find_base() -> Path:
     for p in [start, *start.parents][:8]:
         if (p / "docker-compose.yml").exists():
             return p
-    return start.parents[2] if frozen else start
+    # v1.4.1: sin sistema por near — el fallback es la carpeta del propio exe (o repo en dev).
+    # parents[2] saltaba con IndexError si el exe estaba en una carpeta poco profunda (C:\X\Gestor.exe)
+    return Path(__file__).resolve().parent.parent if not frozen else start
 
 BASE_DIR = _find_base()
 
@@ -132,6 +134,13 @@ def valid_name(name):
     return bool(re.fullmatch(r"[A-Za-z0-9_-]+", name))
 
 
+def proj_name(name):
+    """v1.4.1: docker compose EXIGE minúsculas ('invalid project name "Cerebro1"') —
+    normalizar cualquier nombre de cerebro a stack name de docker."""
+    n = re.sub(r"[^a-z0-9_-]", "", name.lower())
+    return n or name.lower()
+
+
 def read_env(name):
     """Read all key=val from instance .env into dict."""
     env = INSTANCES_DIR / name / ".env"
@@ -177,7 +186,7 @@ def list_instances():
     for d in sorted(INSTANCES_DIR.iterdir()):
         if not (d / ".env").exists(): continue
         vals = read_env(d.name)
-        project = vals.get("COMPOSE_PROJECT_NAME", d.name)
+        project = proj_name(vals.get("COMPOSE_PROJECT_NAME", d.name))  # v1.4.1: docker pide minúsculas
         info = {"name": d.name, "project": project, "ports": {}, "status": "stopped"}
         for key in PORT_RANGES:
             info["ports"][key] = vals.get(key, "")
@@ -228,12 +237,13 @@ def instance_create(name):
     ports = auto_ports()
     base_fwd = str(BASE_DIR).replace("\\", "/")
     (inst / ".env").write_text(
-        f"COMPOSE_PROJECT_NAME={name}\nOPENROUTER_API_KEY=\n"
+        f"COMPOSE_PROJECT_NAME={proj_name(name)}\nOPENROUTER_API_KEY=\n"  # v1.4.1: docker exige minúsculas
         f"BACKEND_PORT={ports['BACKEND_PORT']}\nFRONTEND_PORT={ports['FRONTEND_PORT']}\n"
         f"AGENT_PORT={ports['AGENT_PORT']}\nSEARXNG_PORT={ports['SEARXNG_PORT']}\n"
         f"OMNIROUTE_PORT={ports['OMNIROUTE_PORT']}\n"
         # v1.3: VAULT_HOST_PATH con / — igual que VAULT_DIR; Docker/Windows acepta ambas, Linux necesita /
         # v1.4: cerebro directo en la raíz (gestor_de_cerebros\<name>), sin instances\
+        # v1.4.1: COMPOSE_PROJECT_NAME normalizado (docker exige minúsculas); la carpeta conserva el nombre tal cual
         f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/{name}/vault\n"
         f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/{name}/vault\n"
         f"ENV_FILE={base_fwd}/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/{name}\n",
@@ -431,11 +441,15 @@ def set_base(path_str):
 
 
 def _inst_dir(base, name):
-    """Carpeta de un cerebro en una base cualquiera — layout nuevo (base\\name) o viejo (base\\instances\\name)."""
+    """Carpeta de un cerebro en una base cualquiera — layout nuevo (base\\name) o viejo (base\\instances\\name).
+    v1.4.1: case-insensitive — la carpeta puede llamarse 'Cerebro1' y el stack de docker 'cerebro1'."""
     b = Path(base)
-    for cand in (b / name, b / "instances" / name):
-        if (cand / ".env").exists():
-            return cand
+    for father in (b, b / "instances"):
+        if not father.is_dir():
+            continue
+        for d in father.iterdir():
+            if d.name.lower() == str(name).lower() and (d / ".env").exists():
+                return d
     return None
 
 
@@ -487,7 +501,7 @@ def move_cerebros(items):
             for i in clean:
                 src = _inst_dir(i["base"], i["name"])
                 lines.append(f"Moviendo {i['name']} (desde {i['base']})...")
-                project = read_env_path(src / ".env").get("COMPOSE_PROJECT_NAME", i["name"])
+                project = proj_name(read_env_path(src / ".env").get("COMPOSE_PROJECT_NAME", i["name"]))  # v1.4.1
                 run(["docker", "compose", "-p", project, "-f", str(Path(i["base"]) / "docker-compose.yml"),
                      "--env-file", str(src / ".env"), "stop"], timeout=120)
                 shutil.move(str(src), str(INSTANCES_DIR / i["name"]))
@@ -856,7 +870,7 @@ def move_docker_data(dest_str=""):
 
 def compose_cmd(name, *args):
     vals = read_env(name)
-    project = vals.get("COMPOSE_PROJECT_NAME", name)
+    project = proj_name(vals.get("COMPOSE_PROJECT_NAME", name))  # v1.4.1: docker pide minúsculas
     base_fwd = str(BASE_DIR).replace("\\", "/")
     env_vars = {
         "VAULT_DIR": vals.get("VAULT_DIR", f"{base_fwd}/{name}/vault"),
