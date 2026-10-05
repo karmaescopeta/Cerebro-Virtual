@@ -637,6 +637,29 @@ def make_dir(path):
         return {"error": f"No puedo crear la carpeta: {e}"}
 
 
+def tidy_root():
+    """v1.4: organizar un cerebro volcado a mano en la raíz del sistema (layout legado:
+    el stack corría en la raíz con .env+vault ahí, sin carpeta con su nombre). Lo envuelve
+    en <nombre>/ y regenera las rutas. Solo con confirmación explícita del usuario."""
+    envf = BASE_DIR / ".env"
+    if not (envf.exists() and (BASE_DIR / "vault").is_dir()):
+        return {"error": "No veo archivos sueltos de cerebro en la carpeta del sistema"}
+    project = read_env_path(envf).get("COMPOSE_PROJECT_NAME") or "cerebro"
+    target = BASE_DIR / project
+    if target.exists():
+        return {"error": f"Ya existe una carpeta llamada {project} — revisa a mano"}
+    try:
+        target.mkdir()
+        for item in (".env", "vault", "agent-config.yaml", "agent-config.json"):
+            p = BASE_DIR / item
+            if p.exists():
+                shutil.move(str(p), str(target / item))
+    except Exception as e:
+        return {"error": f"No pude mover: {e}"}
+    _rewrite_envs()
+    return {"success": True, "name": project}
+
+
 def _dd_settings():
     return Path(os.environ.get("APPDATA", "")) / "Docker" / "settings-store.json"
 
@@ -905,6 +928,8 @@ def check_requirements():
                     "version": "ya descargadas" if len(have) == 3 else "se descargan (~3GB) en el primer inicio", "url": ""})
     out = {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists(),
            "base": str(BASE_DIR), "is_win": IS_WIN,
+           # v1.4: cerebro volcado a mano en la raíz (sin carpeta con su nombre) → ofrecer organizarlo
+           "sueltos": COMPOSE_FILE.exists() and (BASE_DIR / ".env").exists() and (BASE_DIR / "vault").is_dir(),
            # v1.4: ¿el disco de datos de Docker ya vive bajo la carpeta del sistema?
            "docker_data_here": (not IS_WIN) or docker_data_dir().resolve().is_relative_to(BASE_DIR.parent.resolve())}
     latest = _latest_gestor()
@@ -994,6 +1019,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(pick_folder()); return
         if self.path == "/api/relocate":
             self._json(relocate(body.get("dest", ""))); return
+        if self.path == "/api/tidy-root":
+            self._json(tidy_root()); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
@@ -1007,6 +1034,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
             self._json(instance_remove(name)); return
         self.send_error(404)
+
+
+def _desktop_shortcut():
+    """v1.4: acceso directo en el escritorio — el exe puede vivir donde sea (el sistema se
+    encuentra vía gestor.json). Idempotente; solo en el binario, nunca en dev."""
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        exe = sys.executable.replace("'", "''")
+        ps = ("$d=[Environment]::GetFolderPath('Desktop'); "
+              "$lnk=Join-Path $d 'Gestor de Cerebros.lnk'; "
+              "if (-not (Test-Path $lnk)) { "
+              "$s=(New-Object -ComObject WScript.Shell).CreateShortcut($lnk); "
+              f"$s.TargetPath='{exe}'; "
+              "$s.Save() }")
+        run(["powershell", "-NoProfile", "-Command", ps], timeout=30)
+    except Exception:
+        pass
 
 
 _LAST_REQ = time.time()  # auto-exit: sin peticiones HTTP = navegador cerrado
@@ -1030,6 +1075,7 @@ def main():
     server = http.server.ThreadingHTTPServer(("127.0.0.1", port), Handler)
     threading.Thread(target=_idle_watchdog, daemon=True).start()
     threading.Thread(target=lambda: webbrowser.open(f"http://127.0.0.1:{port}"), daemon=True).start()
+    threading.Thread(target=_desktop_shortcut, daemon=True).start()
     server.serve_forever()
 
 if __name__ == "__main__":
