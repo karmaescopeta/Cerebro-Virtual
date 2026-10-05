@@ -36,7 +36,7 @@ def _find_base() -> Path:
         pass
     frozen = getattr(sys, "frozen", False)
     start = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
-    for child in ("cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
+    for child in ("gestor_de_cerebros", "cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
         if (start / child / "docker-compose.yml").exists():
             return start / child
     for p in [start, *start.parents][:8]:
@@ -46,7 +46,8 @@ def _find_base() -> Path:
 
 BASE_DIR = _find_base()
 
-INSTANCES_DIR = BASE_DIR / "instances"
+# v1.4: los cerebros viven DIRECTO en la carpeta general: gestor_de_cerebros\<cerebro>\
+INSTANCES_DIR = BASE_DIR
 COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
 
 
@@ -54,11 +55,29 @@ def _refresh_base():
     """Recalcular la raíz tras descargar el proyecto (POST /api/download-project)."""
     global BASE_DIR, INSTANCES_DIR, COMPOSE_FILE
     BASE_DIR = _find_base()
-    INSTANCES_DIR = BASE_DIR / "instances"
+    INSTANCES_DIR = BASE_DIR
     COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
+    _migrate_old()
+
+
+def _migrate_old():
+    """v1.4: instalaciones viejas traían los cerebros en instances\\<name> — subirlos un
+    nivel a la raíz (gestor_de_cerebros\\<name>). Silencioso y un solo uso por carpeta."""
+    old = BASE_DIR / "instances"
+    if not old.is_dir():
+        return
+    try:
+        for d in list(old.iterdir()):
+            if (d / ".env").exists() and not (BASE_DIR / d.name).exists():
+                shutil.move(str(d), str(BASE_DIR / d.name))
+    except Exception:
+        pass
 
 
 PORT_RANGES = {"FRONTEND_PORT": 5173, "BACKEND_PORT": 8000, "AGENT_PORT": 8080, "SEARXNG_PORT": 8888, "OMNIROUTE_PORT": 20128}
+
+if COMPOSE_FILE.exists():
+    _migrate_old()  # al arrancar también (no solo tras descargar)
 
 # En exe windowed (console=False), sin este flag cada hijo abre una ventana CMD visible
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -214,9 +233,10 @@ def instance_create(name):
         f"AGENT_PORT={ports['AGENT_PORT']}\nSEARXNG_PORT={ports['SEARXNG_PORT']}\n"
         f"OMNIROUTE_PORT={ports['OMNIROUTE_PORT']}\n"
         # v1.3: VAULT_HOST_PATH con / — igual que VAULT_DIR; Docker/Windows acepta ambas, Linux necesita /
-        f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/instances/{name}/vault\n"
-        f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/instances/{name}/vault\n"
-        f"ENV_FILE={base_fwd}/instances/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/instances/{name}\n",
+        # v1.4: cerebro directo en la raíz (gestor_de_cerebros\<name>), sin instances\
+        f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/{name}/vault\n"
+        f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/{name}/vault\n"
+        f"ENV_FILE={base_fwd}/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/{name}\n",
         encoding="utf-8")
     return {"success": True, "ports": ports}
 
@@ -268,10 +288,10 @@ def download_project(dest_str=""):
                 if any(m.filename.startswith(("..", "/", "\\")) for m in z.infolist()):
                     raise RuntimeError("zip con rutas inseguras")
                 z.extractall(dest)
-            # v1.3: carpeta con nombre profesional — el zip trae "Cerebro-Virtual-main"
+            # v1.4: carpeta general con el nombre del sistema — el zip trae "Cerebro-Virtual-main"
             extracted = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
-            if extracted and extracted.name != "cerebro_virtual":
-                renamed = dest / "cerebro_virtual"  # v1.4: 'renamed' — 'target' ya es la carpeta elegida por el usuario
+            if extracted and extracted.name != "gestor_de_cerebros":
+                renamed = dest / "gestor_de_cerebros"
                 if not renamed.exists():
                     extracted.rename(renamed)
             zpath.unlink()
@@ -375,16 +395,16 @@ def _rewrite_envs():
     base_fwd = str(BASE_DIR).replace("\\", "/")
     for d in INSTANCES_DIR.iterdir():
         env = d / ".env"
-        if not env.exists():
+        if not env.exists() or not d.is_dir():
             continue
-        if read_env(d.name).get("VAULT_DIR") == f"{base_fwd}/instances/{d.name}/vault":
+        if read_env_path(env).get("VAULT_DIR") == f"{base_fwd}/{d.name}/vault":
             continue  # ya apunta aquí
         keep = [ln for ln in env.read_text(encoding="utf-8", errors="ignore").splitlines()
                 if not ln.startswith(("VAULT_HOST_PATH=", "VAULT_DIR=", "ENV_FILE=", "AGENT_CONFIG_DIR="))]
-        keep += [f"VAULT_HOST_PATH={base_fwd}/instances/{d.name}/vault",
-                 f"VAULT_DIR={base_fwd}/instances/{d.name}/vault",
-                 f"ENV_FILE={base_fwd}/instances/{d.name}/.env",
-                 f"AGENT_CONFIG_DIR={base_fwd}/instances/{d.name}"]
+        keep += [f"VAULT_HOST_PATH={base_fwd}/{d.name}/vault",
+                 f"VAULT_DIR={base_fwd}/{d.name}/vault",
+                 f"ENV_FILE={base_fwd}/{d.name}/.env",
+                 f"AGENT_CONFIG_DIR={base_fwd}/{d.name}"]
         env.write_text("\n".join(keep) + "\n", encoding="utf-8")
 
 
@@ -409,10 +429,18 @@ def set_base(path_str):
     return {"success": True, "base": str(BASE_DIR), "instances": len(list_instances())}
 
 
+def _inst_dir(base, name):
+    """Carpeta de un cerebro en una base cualquiera — layout nuevo (base\\name) o viejo (base\\instances\\name)."""
+    b = Path(base)
+    for cand in (b / name, b / "instances" / name):
+        if (cand / ".env").exists():
+            return cand
+    return None
+
+
 def find_other_cerebros():
     """v1.4: cerebros instalados en OTRAS carpetas del equipo. Docker sabe dónde vive cada
-    stack (docker compose ls) — sin escanear discos. Cada cerebro es un proyecto compose con
-    su carpeta instances/<nombre>; los de la base actual se excluyen."""
+    stack (docker compose ls) — sin escanear discos. Los de la base actual se excluyen."""
     rc, out, _ = run(["docker", "compose", "ls", "--all", "--format", "json"], timeout=15)
     result = {}
     if rc == 0:
@@ -425,8 +453,8 @@ def find_other_cerebros():
                 base = Path(cfg).resolve().parent
                 if base == Path(BASE_DIR).resolve():
                     continue
-                if not ((base / "instances" / name) / ".env").exists():
-                    continue
+                if _inst_dir(base, name) is None:
+                    continue  # stack ajeno (no es un cerebro nuestro)
                 g = result.setdefault(str(base), {"base": str(base), "cerebros": []})
                 g["cerebros"].append({"name": name, "encendido": "running" in (p.get("Status") or "")})
         except Exception:
@@ -445,7 +473,7 @@ def move_cerebros(items):
     if not clean:
         return {"error": "Nada que mover"}
     for i in clean:
-        if not ((Path(i["base"]) / "instances" / i["name"]) / ".env").exists():
+        if _inst_dir(i["base"], i["name"]) is None:
             return {"error": f"No encuentro {i['name']} en {i['base']}"}
         if (INSTANCES_DIR / i["name"]).exists():
             return {"error": f"Ya existe un cerebro llamado {i['name']} aquí — renómbralo o bórralo antes"}
@@ -456,7 +484,7 @@ def move_cerebros(items):
         lines, ok = [], True
         try:
             for i in clean:
-                src = Path(i["base"]) / "instances" / i["name"]
+                src = _inst_dir(i["base"], i["name"])
                 lines.append(f"Moviendo {i['name']} (desde {i['base']})...")
                 project = read_env_path(src / ".env").get("COMPOSE_PROJECT_NAME", i["name"])
                 run(["docker", "compose", "-p", project, "-f", str(Path(i["base"]) / "docker-compose.yml"),
@@ -470,6 +498,82 @@ def move_cerebros(items):
             lines.append(f"Error: {e}")
         with LOG_LOCK:
             b = START_LOGS.get("move")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
+def pick_folder():
+    """v1.4: selector de carpeta NATIVO del sistema (el explorador de Windows/Linux de verdad,
+    con buscar y crear carpeta). Bloquea hasta que el usuario elige o cancela."""
+    if IS_WIN:
+        ps = ("[Console]::OutputEncoding=[Text.Encoding]::UTF8; "
+              "Add-Type -AssemblyName System.Windows.Forms; "
+              "$f = New-Object System.Windows.Forms.FolderBrowserDialog; "
+              "$f.Description = 'Elige la carpeta del sistema'; "
+              "$f.ShowNewFolderButton = $true; "
+              "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }")
+        rc, out, _ = run(["powershell", "-NoProfile", "-STA", "-Command", ps], timeout=900)
+        path = out.strip() if rc == 0 else ""
+        return {"path": path or None}
+    rc, out, _ = run(["zenity", "--file-selection", "--directory", "--title", "Elige la carpeta del sistema"], timeout=900)
+    if rc == 0:
+        return {"path": out.strip() or None}
+    return {"error": "No hay selector de carpetas en este equipo — usa el explorador de la ventana"}
+
+
+def relocate(dest_str):
+    """v1.4: mudar TODO el sistema (la carpeta gestor_de_cerebros con todos los cerebros) a otra
+    carpeta/disco. Para los cerebros encendidos, mueve todo y vuelve a encenderlos. Log en START_LOGS['relocate']."""
+    if not COMPOSE_FILE.exists():
+        return {"error": "No hay sistema instalado"}
+    if START_LOGS.get("relocate", {}).get("done") is False:
+        return {"error": "Ya se está mudando"}
+    dest = Path((dest_str or "").strip())
+    if not str(dest) or not dest.is_absolute():
+        return {"error": "Carpeta no válida"}
+    target = dest / BASE_DIR.name
+    if target.resolve() == Path(BASE_DIR).resolve():
+        return {"error": "El sistema ya está en esa carpeta"}
+    if target.exists():
+        return {"error": f"Ya existe {target} — elige otra carpeta o bórrala"}
+    try:
+        exe = Path(sys.executable).resolve()
+        if exe == Path(BASE_DIR).resolve() or exe.is_relative_to(Path(BASE_DIR).resolve()):
+            return {"error": "El gestor no puede vivir DENTRO de la carpeta del sistema — saca el exe fuera primero"}
+    except Exception:
+        pass
+    with LOG_LOCK:
+        START_LOGS["relocate"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        lines, ok = [], False
+        try:
+            running = [i["name"] for i in list_instances() if i["status"] == "running"]
+            if running:
+                lines.append(f"Apagando cerebros encendidos ({', '.join(running)})...")
+                for name in running:
+                    cmd, env = compose_cmd(name, "stop")
+                    run(cmd, timeout=120)
+            lines.append(f"Mudando todo el sistema a {target} (puede tardar si hay muchos archivos)...")
+            dest.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(BASE_DIR), str(target))
+            _config_file().write_text(json.dumps({"base": str(target)}), encoding="utf-8")
+            _refresh_base()
+            _rewrite_envs()
+            ok = COMPOSE_FILE.exists()
+            lines.append(f"Sistema listo en: {BASE_DIR}")
+            if ok and running:
+                lines.append(f"Volviendo a encender: {', '.join(running)}...")
+                for name in running:
+                    instance_start(name)
+        except Exception as e:
+            lines.append(f"Error: {e}")
+        with LOG_LOCK:
+            b = START_LOGS.get("relocate")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -639,9 +743,9 @@ def compose_cmd(name, *args):
     project = vals.get("COMPOSE_PROJECT_NAME", name)
     base_fwd = str(BASE_DIR).replace("\\", "/")
     env_vars = {
-        "VAULT_DIR": vals.get("VAULT_DIR", f"{base_fwd}/instances/{name}/vault"),
-        "ENV_FILE": vals.get("ENV_FILE", f"{base_fwd}/instances/{name}/.env"),
-        "AGENT_CONFIG_DIR": vals.get("AGENT_CONFIG_DIR", f"{base_fwd}/instances/{name}"),
+        "VAULT_DIR": vals.get("VAULT_DIR", f"{base_fwd}/{name}/vault"),
+        "ENV_FILE": vals.get("ENV_FILE", f"{base_fwd}/{name}/.env"),
+        "AGENT_CONFIG_DIR": vals.get("AGENT_CONFIG_DIR", f"{base_fwd}/{name}"),
     }
     full_env = {**os.environ, **env_vars}
     # ponytail: instancia vieja sin OMNIROUTE_PORT en .env → evita chocar con el stack principal (20128)
@@ -886,6 +990,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(move_cerebros(body.get("items", []))); return
         if self.path == "/api/mkdir":
             self._json(make_dir(body.get("path", ""))); return
+        if self.path == "/api/pick-folder":
+            self._json(pick_folder()); return
+        if self.path == "/api/relocate":
+            self._json(relocate(body.get("dest", ""))); return
         if self.path.startswith("/api/start/"):
             name = urllib.parse.unquote(self.path.split("/api/start/")[1])
             if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
