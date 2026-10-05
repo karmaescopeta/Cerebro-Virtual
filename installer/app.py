@@ -526,16 +526,58 @@ def pick_folder():
     return {"error": "No hay selector de carpetas en este equipo — usa el explorador de la ventana"}
 
 
+def _move_one(src, dst, tries=3):
+    """Mover con reintentos y sin estados sucios:
+    - mismo volumen → os.rename ATÓMICO (si falla por bloqueo, no queda nada a medias;
+      shutil.move haría copytree parcial + rmtree fallido = duplicados en los reintentos)
+    - otro volumen → shutil.move (copiar y borrar); si quedó una copia a medias de un
+      intento anterior, se limpia y se rehace
+    - nunca se sobreescribe lo que ya esté en el destino"""
+    src, dst = Path(src), Path(dst)
+    if src.resolve() == dst.resolve():
+        return None  # mismo sitio — nada que hacer (y NUNCA borrar en este caso)
+    for i in range(tries):
+        try:
+            if dst.exists():
+                if not src.exists():
+                    return None  # ya estaba movida en un intento anterior
+                shutil.rmtree(dst, ignore_errors=True)  # copia a medias previa — rehacer
+            if src.anchor == dst.anchor:
+                os.rename(src, dst)
+            else:
+                shutil.move(str(src), str(dst))
+            return None
+        except Exception as e:
+            if i == tries - 1:
+                return f"{src} ({e})"
+            time.sleep(2)
+    return None
+
+
 def _move_except(src, dst, exe):
-    """Mover todo src→dst salvo el exe bloqueado (baja por las carpetas que lo contienen)."""
+    """Mover todo src→dst salvo el exe bloqueado (baja por las carpetas que lo contienen).
+    El docker-compose.yml se mueve el ÚLTIMO: es el distintivo de 'aquí hay un sistema' —
+    si algo falla a medias, la carpeta vieja sigue siendo válida y reintentable.
+    Devuelve la lista de rutas que no se pudieron mover."""
     dst.mkdir(parents=True, exist_ok=True)
+    failed, compose = [], None
     for item in src.iterdir():
+        if item.name == "docker-compose.yml":
+            compose = item
+            continue
         if exe is not None and item.resolve() == exe:
             continue  # el exe en ejecución está bloqueado por Windows — se queda y sigue funcionando
         if exe is not None and exe.is_relative_to(item.resolve()):
-            _move_except(item, dst / item.name, exe)  # la carpeta que contiene el exe se mueve por dentro
+            failed += _move_except(item, dst / item.name, exe)  # la carpeta del exe se mueve por dentro
         else:
-            shutil.move(str(item), str(dst / item.name))
+            err = _move_one(item, dst / item.name)
+            if err:
+                failed.append(err)
+    if compose is not None and not failed:  # con fallos, el compose se queda: mantiene la base vieja válida y reintentable
+        err = _move_one(compose, dst / compose.name)
+        if err:
+            failed.append(err)
+    return failed
 
 
 def relocate(dest_str):
@@ -553,11 +595,25 @@ def relocate(dest_str):
         return {"error": "El sistema ya está en esa carpeta"}
     if str(target) == str(target.anchor):
         return {"error": "Elige (o crea) una carpeta concreta, no la raíz del disco"}
+    if Path(BASE_DIR).resolve().is_relative_to(target.resolve()):
+        return {"error": "No puedes elegir una carpeta que CONTIENE al sistema (su carpeta padre o superior) — elige una carpeta aparte"}
+    if target.resolve().is_relative_to(Path(BASE_DIR).resolve()):
+        return {"error": "No puedes elegir una carpeta de DENTRO del sistema — elige una carpeta fuera de él"}
     if (target / "docker-compose.yml").exists():
-        return {"error": f"En {target} ya hay un sistema instalado — elige otra carpeta"}
+        # v1.4.1: puede ser el resto de una mudanza anterior que quedó a medias — el marcador lo dice
+        partial = False
+        try:
+            mk = json.loads((target / "relocating.json").read_text(encoding="utf-8"))
+            partial = mk.get("from") == str(Path(BASE_DIR).resolve())
+        except Exception:
+            pass
+        if not partial:
+            return {"error": f"En {target} ya hay un sistema instalado — elige otra carpeta"}
+    else:
+        partial = False
     try:
         base_names = {p.name for p in Path(BASE_DIR).iterdir()}
-        if target.exists():
+        if target.exists() and not partial:
             clash = base_names & {p.name for p in target.iterdir()}
             if clash:
                 return {"error": f"En {target} ya existe: {', '.join(sorted(clash)[:5])} — elige una carpeta vacía o con otro nombre"}
@@ -574,6 +630,9 @@ def relocate(dest_str):
     def worker():
         lines, ok = [], False
         try:
+            # marcador de mudanza en curso: si algo queda a medias, el reintento no se frena en los guards
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "relocating.json").write_text(json.dumps({"from": str(Path(BASE_DIR).resolve())}), encoding="utf-8")
             running = [i["name"] for i in list_instances() if i["status"] == "running"]
             if running:
                 lines.append(f"Apagando cerebros encendidos ({', '.join(running)})...")
@@ -583,9 +642,11 @@ def relocate(dest_str):
             lines.append(f"Mudando todo el sistema a {target} (puede tardar si hay muchos archivos)...")
             # ponytail: entrada a entrada, no shutil.move del árbol — target puede existir y
             # shutil.move(dir, dir_existente) metería el sistema un nivel más abajo
-            _move_except(Path(BASE_DIR), target, exe if exe_inside else None)
+            failed = _move_except(Path(BASE_DIR), target, exe if exe_inside else None)
             if exe_inside:
                 lines.append(f"El gestor se queda donde está ({exe}) — el resto se muda y sigue funcionando igual.")
+            if failed:
+                raise RuntimeError("No pude mover (probablemente en uso por otro programa): " + "; ".join(failed[:3]))
             try:
                 Path(BASE_DIR).rmdir()  # cosmético — si algo la deja ocupada, no debe romper el registro
             except OSError:
@@ -594,6 +655,7 @@ def relocate(dest_str):
             _refresh_base()
             _rewrite_envs()
             ok = COMPOSE_FILE.exists()
+            (target / "relocating.json").unlink(missing_ok=True)  # mudanza completa — quitar el marcador
             lines.append(f"Sistema listo en: {BASE_DIR}")
             if ok and running:
                 lines.append(f"Volviendo a encender: {', '.join(running)}...")

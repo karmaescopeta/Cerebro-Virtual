@@ -92,6 +92,9 @@ td { font-size:14px; }
 th:last-child { text-align:right; }
 .btn-sm { padding:6px 14px; font-size:12px; font-weight:500; }
 .btn-sm .material-symbols-outlined { font-size:16px; }
+.icon-info { background:color-mix(in srgb, var(--color-primary) 12%, transparent); color: var(--color-primary); border:1px solid color-mix(in srgb, var(--color-primary) 35%, transparent); padding:4px 7px; cursor:pointer; border-radius:var(--radius-full); display:inline-flex; align-items:center; }
+.icon-info:hover { background:color-mix(in srgb, var(--color-primary) 22%, transparent); }
+.icon-info .material-symbols-outlined { font-size:16px; }
 .btn-icon { padding:6px 9px; }
 .btn-icon-danger { background:color-mix(in srgb, var(--color-error) 12%, transparent); color: var(--color-error); border:1px solid color-mix(in srgb, var(--color-error) 35%, transparent); }
 th { font-family: var(--font-mono); }
@@ -164,7 +167,7 @@ async function render() {
       <div class="req-grid">${reqCards(porCerebro)}</div>
     </div>
     <div class="card">
-      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="showLocationModal()">Abrir carpeta existente</button><button class="btn btn-secondary btn-sm" onclick="confirmRelocate()"><span class="material-symbols-outlined">save</span>Mover todo a otra carpeta</button>` : ''}</h2>
+      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="showLocationModal()">Abrir carpeta existente</button><span class="icon-info" title="¿Para qué sirve?" onclick="showInfo('open')"><span class="material-symbols-outlined">info</span></span><button class="btn btn-secondary btn-sm" onclick="confirmRelocate()"><span class="material-symbols-outlined">save</span>Mover todo a otra carpeta</button><span class="icon-info" title="¿Para qué sirve?" onclick="showInfo('move')"><span class="material-symbols-outlined">info</span></span>` : ''}</h2>
       ${(inst.instances||[]).length ? `<table><thead><tr><th>Nombre</th><th>Frontend</th><th>Backend</th><th>Agente</th><th>Estado</th><th>Recursos</th><th>Acciones</th></tr></thead><tbody>
         ${(inst.instances||[]).map(i => `<tr><td style="font-weight:600;color:var(--color-primary);">${i.name}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.FRONTEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.BACKEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.AGENT_PORT||'-'}</td><td><span class="badge badge-${i.status==='running'?'running':'stopped'}">${i.status==='running'?'Activo':'Parado'}</span></td><td class="mono-cell">${[i.stats, i.size_gb].filter(Boolean).join(' · ')||'—'}</td><td class="actions-cell">${i.status==='running'?`<button class="btn btn-primary btn-sm" onclick="openInst('${i.name}', ${i.ports.FRONTEND_PORT||5173})"><span class="material-symbols-outlined">public</span>Abrir</button><button class="btn btn-secondary btn-sm" onclick="stopInst('${i.name}')">Parar</button>`:`<button class="btn btn-primary btn-sm" ${dockerOk?'':'disabled title="Arranca Docker primero"'} onclick="startInst('${i.name}')"><span class="material-symbols-outlined">electric_bolt</span>Iniciar</button>`}<button class="btn btn-secondary btn-sm btn-icon" title="Descargar vault" onclick="downloadInst('${i.name}')"><span class="material-symbols-outlined">download</span></button><button class="btn btn-sm btn-icon btn-icon-danger" title="Borrar" onclick="removeInst('${i.name}')"><span class="material-symbols-outlined">delete</span></button></td></tr>`).join('')}
       </tbody></table>` : `<div class="empty-state"><span class="material-symbols-outlined">psychology</span><p>Aún no hay cerebros.</p><p style="margin-top:8px;font-size:13px;">Crea tu primer Cerebro con el botón de arriba.</p></div>`}
@@ -279,6 +282,22 @@ async function startDockerMove(root) {
   const d = await api('/api/move-docker-data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest:root})});
   if (d.error) { toast(d.error, 'error'); return; }
   showLog('dockermove');
+}
+function showInfo(which) {
+  const texts = {
+    open: ['¿Para qué sirve "Abrir carpeta existente"?',
+      'Se usa cuando el gestor NO encuentra tu sistema: por ejemplo, si acabas de abrir el gestor en otro sitio, en otro ordenador, o alguien movió la carpeta a mano.',
+      'Al pulsarlo eliges la carpeta donde ya está instalado, y el gestor recupera al momento todos tus cerebros. No copia ni mueve nada: solo le dice al gestor dónde vive lo que ya tienes.',
+      'Si lo que quieres es LLEVAR tu sistema a una carpeta nueva, no uses este botón: usa "Mover todo a otra carpeta".'],
+    move: ['¿Para qué sirve "Mover todo a otra carpeta"?',
+      'Traslada físicamente TODO tu sistema —el programa y cada cerebro con todos sus archivos— a la carpeta que elijas. Vale para el mismo disco o para otro (por ejemplo, para pasar de C: a D:).',
+      'La carpeta que elijas pasará a ser la carpeta del sistema. Los cerebros encendidos se apagan un momento durante el traslado y se vuelven a encender solos al terminar. Si el gestor está dentro de la carpeta que se muda, se queda en su sitio y sigue funcionando igual.',
+      'Si solo quieres señalar dónde está ya instalado (sin mover nada), usa "Abrir carpeta existente".']
+  };
+  const [title, ...ps] = texts[which];
+  const m = document.createElement('div'); m.className = 'modal-overlay';
+  m.innerHTML = `<div class="modal"><h2>${title}</h2>${ps.map(p => `<p class="subtitle" style="margin-bottom:12px;">${p}</p>`).join('')}<div class="modal-actions"><button class="btn btn-primary" onclick="this.closest('.modal-overlay').remove()">Entendido</button></div></div>`;
+  document.body.appendChild(m);
 }
 function confirmDockerMove() {
   const m = document.createElement('div'); m.className = 'modal-overlay';

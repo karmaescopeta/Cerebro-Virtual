@@ -38,7 +38,7 @@ Solo dos cosas, ambas gratis:
 
 ## Instalación en 2 pasos
 
-Descargas **un solo archivo**, enciendes, y el asistente visual te pregunta lo que necesita. Sin terminal, sin carpetas que buscar, sin editar archivos a mano.
+Descargas **un solo archivo**, enciendes, y el propio gestor te pregunta lo que necesita. Sin terminal, sin carpetas que buscar, sin editar archivos a mano.
 
 ### 1. Descargar el Gestor de Cerebros
 
@@ -50,8 +50,25 @@ Ve a [Releases](https://github.com/karmaescopeta/Cerebro-Virtual/releases) y des
 > El exe de Windows no está firmado: al abrirlo por primera vez Windows muestra SmartScreen → pulsa **"Más información" → "Ejecutar igualmente"**.
 
 Doble clic. Se abre tu navegador con el gestor. Ahí verás:
-1. **Los requisitos** (Docker Desktop, etc.) — con enlaces de descarga si falta algo.
-2. La tarjeta **"Instalar Cerebro Virtual"** → pulsa el botón y el propio gestor descarga el proyecto (~un minuto). No tienes que hacer nada más.
+1. **Los requisitos** (Docker Desktop, etc.) — con enlaces de descarga si falta algo, y un botón **"Instalar dependencias"** que lo instala todo de golpe (te pedirá permiso de Windows, tú solo aceptas).
+2. La pregunta **"¿Dónde guardo tus cerebros?"** — se abre el explorador de Windows de toda la vida: navega hasta la carpeta que quieras (por ejemplo `D:\`) y si hace falta creas una carpeta nueva desde el propio explorador. Vale cualquier disco.
+3. Pulsa **"Instalar en esta carpeta"** y el gestor descarga el proyecto (~un minuto).
+
+Dentro de la carpeta que elijas se crea esta estructura:
+
+```
+la carpeta que elegiste\
+└── gestor_de_cerebros\     ← el sistema (código + configuración)
+    ├── cerebro1\            ← un cerebro = una carpeta con su nombre
+    │   └── vault\           ← tus datos de ESE cerebro, aquí y solo aquí
+    ├── cerebro2\
+    │   └── vault\
+    └── ...
+```
+
+Cada cerebro con todos sus archivos vive en su propia carpeta, con su nombre. Si algún día quieres buscar a mano tus notas, sabes exactamente dónde están.
+
+> En Windows, además, el gestor crea solo un acceso directo en el escritorio la primera vez que lo abres. Puedes mover ese acceso directo donde quieras: el gestor recuerda dónde vive tu sistema.
 
 ### 2. Crear tu primer cerebro
 
@@ -60,6 +77,18 @@ Pulsa **"Nuevo cerebro"**, dale un nombre y dale a **Iniciar**. La primera vez t
 Cuando termine, pulsa **Abrir**: aparece el asistente visual que te pide tu clave de OpenRouter, el nombre de tu agente y los modelos. Todo trae valores por defecto — solo la clave es imprescindible si quieres usar la IA.
 
 > **¿Necesitas cambiar algo después?** Ve a Ajustes (el icono de engranaje en la interfaz). Desde ahí puedes cambiar la clave, los modelos, activar/desactivar el túnel, exportar copias de seguridad, etc.
+
+---
+
+## ¿Ya lo tenías instalado? (actualizar o cambiar de ordenador)
+
+El gestor nuevo no necesita reinstalar nada. Al abrirlo, en la pantalla de tus cerebros:
+
+- **"Abrir carpeta existente"** — le dice al gestor dónde vive tu sistema ya instalado (porque acabas de bajar un gestor nuevo, o porque moviste la carpeta a mano). Señalas la carpeta y al momento aparecen todos tus cerebros. No copia ni mueve nada.
+- **"Mover todo a otra carpeta"** — muda físicamente el sistema completo (con todos los cerebros y sus archivos) a otra carpeta o disco: vale para pasar de `C:` a `D:`, por ejemplo. Los cerebros encendidos se apagan un momento durante el traslado y se vuelven a encender solos al terminar. Elige la carpeta con el explorador de Windows; esa carpeta pasa a ser la nueva carpeta del sistema.
+- **El icono de "i"** junto a cada botón te explica para qué sirve, por si dudas.
+
+Y si el gestor encuentra cerebros instalados en otras carpetas del equipo, te lo avisa y te ofrece meterlos en tu carpeta central para tenerlo todo junto.
 
 ---
 
@@ -107,7 +136,9 @@ docker compose down
 
 ## ¿Dónde se guardan mis datos?
 
-Todo lo que subes y genera Cerebro Virtual vive en la carpeta `vault/` dentro del proyecto. Es solo tuyo, no se sube a internet, no lo ve nadie más. Si borras la carpeta, pierdes tus datos (haz copias con el botón Exportar en Ajustes).
+Todo lo que subes y genera un cerebro vive en `vault/`, dentro de la carpeta con su nombre: `gestor_de_cerebros\<nombre del cerebro>\vault\`. Es solo tuyo, no se sube a internet, no lo ve nadie más. Si borras esa carpeta, pierdes los datos de ese cerebro (haz copias con el botón Exportar en Ajustes).
+
+¿Quieres tenerlo en otro disco? Pulsa **"Mover todo a otra carpeta"** en el gestor y toda la mudanza se hace sola. Y si lo que quieres es liberar espacio en `C:` moviendo las imágenes que descarga Docker (~los GB que pesan los contenedores), está el botón **"Mover datos de Docker aquí"** en la sección de Requisitos del gestor.
 
 ---
 
