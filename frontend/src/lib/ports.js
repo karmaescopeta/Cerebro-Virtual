@@ -12,5 +12,6 @@ export async function getPorts() {
 export async function containerUrl(name, fallbackPort) {
   const p = await getPorts()
   const port = p[name] || fallbackPort
-  return `http://localhost:${port}`
+  // location.hostname (no 'localhost' a fuego): si entras por LAN/túnel, el panel también abre por ahí
+  return `http://${location.hostname}:${port}`
 }

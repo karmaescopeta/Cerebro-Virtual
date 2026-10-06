@@ -1,4 +1,17 @@
 import React, { useState, useEffect } from 'react'
+import { containerUrl } from '../../lib/ports.js'
+
+// v1.5.6: link a OmniRoute con el puerto REAL de este cerebro (su .env) — el 20128 a fuego
+// apuntaba al puerto de otro cerebro o a ninguno. hostname dinámico = también funciona por LAN.
+function OmniRouteLink({ children, style, title }) {
+  const [url, setUrl] = useState(`http://${location.hostname}:20128`)
+  useEffect(() => { containerUrl('omniroute', 20128).then(setUrl).catch(() => {}) }, [])
+  return (
+    <a className="btn-app btn-app-secondary" style={{ textDecoration: 'none', ...style }} href={url} target="_blank" rel="noopener noreferrer" title={title}>
+      {children}
+    </a>
+  )
+}
 
 // ponytail: una lista alimenta el modal info y el autocomplete del terminal — solo lo básico
 const OLLAMA_COMMANDS = [
@@ -129,10 +142,9 @@ function ModelosView() {
                   </button>
                 )}
                 {/* ponytail: OmniRoute redirige a rutas absolutas y colisiona /api tras proxy → link directo al puerto publicado */}
-                <a className="btn-app btn-app-secondary" style={{ textDecoration: 'none' }}
-                  href={`http://${location.hostname}:20128`} target="_blank" rel="noopener noreferrer">
+                <OmniRouteLink>
                   <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Editar combo
-                </a>
+                </OmniRouteLink>
               </div>
             </SectionHeader>
 
@@ -408,11 +420,9 @@ function LocalAISection({ profiles, saveLocalAssignments }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-3)', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
           <div className="label-caps">Enrutamiento (OmniRoute)</div>
           <div style={{ display: 'flex', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-            <a className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto', textDecoration: 'none' }}
-              href={`http://${location.hostname}:20128`} target="_blank" rel="noopener noreferrer"
-              title="Abrir interfaz web de OmniRoute">
+            <OmniRouteLink style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto' }} title="Abrir interfaz web de OmniRoute">
               <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Configurar proveedores
-            </a>
+            </OmniRouteLink>
             <button className="btn-app btn-app-secondary" style={{ padding: 'var(--space-2) var(--space-3)', minWidth: 'auto' }} onClick={provision} disabled={provisioning}>
               <span className="material-symbols-outlined" style={{ fontSize: 16 }}>sync</span>
               {provisioning ? 'Comprobando...' : 'Comprobar proveedores'}
