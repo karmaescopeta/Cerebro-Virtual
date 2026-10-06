@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.5.4"
+GESTOR_VERSION = "1.5.5"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 IS_WIN = os.name == "nt"
@@ -1167,6 +1167,55 @@ def _postcheck_recreate(name, log):
         log(f"(comprobación post-arranque falló: {e})")
 
 
+def _ensure_omni_key(name, log):
+    """v1.5.5: cerebros IMPORTADOS pueden traer un .env sin OMNIROUTE_API_KEY (la key
+    que el agente presenta al /v1 de OmniRoute). Sin ella, el chat muere con un 401
+    imposible de diagnosticar. Auto-curar tras el arranque: si falta, crear una key en
+    el OmniRoute de ESTE cerebro (login con su propia password de gestión), guardarla
+    en su .env y recrear el agente para que la use."""
+    try:
+        vals = read_env(name)
+        if vals.get("OMNIROUTE_API_KEY", "").strip():
+            return  # ya tiene key — nada que hacer
+        port = vals.get("OMNIROUTE_PORT", "20128")
+        pw = vals.get("OMNIROUTE_MANAGE_PASSWORD", "")
+        if not pw:
+            log("(no pude revisar la clave interna del cerebro: falta OMNIROUTE_MANAGE_PASSWORD)")
+            return
+        base = f"http://127.0.0.1:{port}"
+        # login con cookie de sesión (como hace el backend de la app)
+        import urllib.request, http.cookiejar
+        cj = http.cookiejar.CookieJar()
+        op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))
+        r1 = op.open(urllib.request.Request(base + "/api/auth/login",
+                    data=json.dumps({"password": pw}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST"), timeout=15)
+        r1.read()
+        # crear la key
+        r2 = op.open(urllib.request.Request(base + "/api/keys",
+                    data=json.dumps({"name": f"{name}-agent"}).encode(),
+                    headers={"Content-Type": "application/json"}, method="POST"), timeout=15)
+        d = json.loads(r2.read())
+        key = d.get("key") or d.get("apiKey") or d.get("token") or ""
+        if not key:
+            raise RuntimeError("OmniRoute no devolvió la clave")
+        # guardarla en el .env (preservando todo lo demás) y recrear SOLO el agente
+        env_path = INSTANCES_DIR / name / ".env"
+        lines = [l for l in env_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                 if not l.startswith("OMNIROUTE_API_KEY=")]
+        lines.append("OMNIROUTE_API_KEY=" + key)
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        log("Reparado: este cerebro no tenía su clave interna de IA (se pierde al importar o"
+            " mover a mano un sistema viejo). La he creado y guardado; aplicándola…")
+        cmd, env = compose_cmd(name, "up", "-d", "--force-recreate", "--no-deps", "sistema-agente")
+        r3 = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env,
+                            creationflags=NO_WINDOW, errors="replace")
+        log("Clave interna aplicada — el chat ya puede funcionar." if r3.returncode == 0
+            else "No pude aplicar la clave del todo; si el chat falla, dale a Iniciar otra vez.")
+    except Exception as e:
+        log(f"(revisión de la clave interna: {e})")
+
+
 def instance_start(name):
     if not (INSTANCES_DIR / name / ".env").exists(): return {"error": "No existe"}
     if START_LOGS.get(name, {}).get("done") is False: return {"error": "Ya se está iniciando"}
@@ -1196,6 +1245,7 @@ def instance_start(name):
             if rc == 0:
                 time.sleep(5)  # dejar que arranquen del todo antes de juzgar
                 _postcheck_recreate(name, lambda s: _log_append(buf, s))
+                _ensure_omni_key(name, lambda s: _log_append(buf, s))  # v1.5.5: auto-cura del import sin key
             with LOG_LOCK:
                 if START_LOGS.get(name) is buf:
                     buf.update(done=True, ok=rc == 0)
