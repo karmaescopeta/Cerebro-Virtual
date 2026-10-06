@@ -136,7 +136,9 @@ Las conversaciones se guardan en sesiones: cierras, vuelves, y sigues donde esta
 
 ## Actualizar a una nueva versión
 
-La campana de la interfaz te avisa cuando hay versión nueva. Pulsas, revisas el changelog, y el sistema descarga y reconstruye los contenedores él solo (con copia de seguridad y vuelta atrás automática si algo falla).
+**Desde el gestor (recomendado):** Ajustes (la tuerca, arriba a la derecha) → **"Buscar la última versión del sistema"**. Descarga el código nuevo, lo instala y reconstruye lo que esté encendido — tus cerebros y sus datos no se tocan.
+
+**Desde la app:** la campana de la interfaz te avisa cuando hay versión nueva. Pulsas, revisas el changelog, y el sistema descarga y reconstruye los contenedores él solo (con copia de seguridad y vuelta atrás automática si algo falla).
 
 Tus datos (el vault, tus cerebros, tu configuración) no se tocan. Solo se actualiza el código.
 

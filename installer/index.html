@@ -362,11 +362,23 @@ function showSettings() {
   m.innerHTML = `<div class="modal" style="max-width:640px;">
     <h2 style="display:flex;align-items:center;gap:10px;"><span class="material-symbols-outlined" style="color:var(--color-primary);font-size:22px;">settings</span>Ajustes</h2>
     <div class="set-path">Tu sistema vive en: ${window.__base || ''}</div>
+    <div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">update</span></div><div class="set-txt"><div class="set-title">Buscar la última versión del sistema</div><div class="set-desc">Descarga e instala la última versión del programa. Tus cerebros y sus datos no se tocan; los que estén encendidos se paran un momento, se reconstruyen con el código nuevo y vuelven solos.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="confirmUpdateSystem()">Actualizar</button></div>
     <div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">save</span></div><div class="set-txt"><div class="set-title">Cambiar de carpeta o disco</div><div class="set-desc">Muda el sistema completo —todos tus cerebros con todos sus archivos— a otra carpeta o disco (por ejemplo, de C: a D:). Los cerebros encendidos se apagan un momento y se encienden solos al terminar.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="this.closest('.modal-overlay').remove();confirmRelocate()">Mover todo</button></div>
     <div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">folder_open</span></div><div class="set-txt"><div class="set-title">Usar un sistema ya instalado</div><div class="set-desc">Si tu sistema está en otra carpeta (o lo moviste a mano): señalo su carpeta y tus cerebros aparecen al momento. No copia ni mueve nada.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="this.closest('.modal-overlay').remove();showLocationModal('buscar')">Señalar carpeta</button></div>
     ${dockerRow}
   </div>`;
   document.body.appendChild(m);
+}
+function confirmUpdateSystem() {
+  const m = document.createElement('div'); m.className = 'modal-overlay';
+  m.innerHTML = `<div class="modal"><h2>Actualizar el sistema</h2><p class="subtitle" style="margin-bottom:16px;">Descargo la última versión del programa y la instalo.<br><br>Tus cerebros y sus datos <b>no se tocan</b>. Los cerebros encendidos se paran un momento, se reconstruyen con el código nuevo y vuelven a encenderse solos (puede tardar unos minutos). ¿Seguro?</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="usgo">Actualizar</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#usgo').onclick = async () => {
+    m.remove();
+    const d = await api('/api/update-system', {method:'POST'});
+    if (d.error) { toast(d.error, 'error'); return; }
+    showLog('task:update');
+  };
 }
 function confirmDockerMove() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
@@ -400,7 +412,7 @@ async function installDeps() {
   if (d.error) { toast(d.error, 'error'); return; }
   showLog('task:deps');
 }
-const LOG_TITLES = {'task:setup':'Instalando Cerebro Virtual','task:deps':'Instalando dependencias','task:dockermove':'Liberando espacio del disco de Windows','task:move':'Moviendo tus cerebros','task:relocate':'Mudando todo el sistema'};
+const LOG_TITLES = {'task:setup':'Instalando Cerebro Virtual','task:deps':'Instalando dependencias','task:dockermove':'Liberando espacio del disco de Windows','task:move':'Moviendo tus cerebros','task:relocate':'Mudando todo el sistema','task:update':'Actualizando el sistema'};
 // v1.5 (U10/U17): panel de progreso con reloj SIEMPRE vivo + última línea visible.
 // Vive en <body> (fuera de #app) — render() no lo destruye; al acabar queda con ✓ y botón Abrir.
 function showLog(n) {
@@ -458,6 +470,7 @@ function showLog(n) {
       }
       else if (n === 'task:deps') toast(d.ok ? 'Dependencias listas' : 'Algunas dependencias fallaron — mira el log', d.ok ? 'success' : 'error');
       else if (n === 'task:dockermove') toast(d.ok ? 'Espacio liberado — lo que Docker descarga ahora vive con tus cerebros' : 'Error liberando espacio — mira el log', d.ok ? 'success' : 'error');
+      else if (n === 'task:update') toast(d.ok ? 'Sistema actualizado — programa al día' : 'Error actualizando el sistema — mira el log', d.ok ? 'success' : 'error');
       else if (n === 'task:move' || n === 'task:relocate') {
         // v1.5.1: decir DÓNDE quedó todo — ruta fresca tras la mudanza
         if (d.ok) { try { const rr = await api('/api/requirements'); toast((n === 'task:move' ? 'Tus cerebros ahora viven en:\n' : 'Tu sistema ahora vive en:\n') + rr.base, 'success', 7000); } catch (e) { toast('Mudanza completada'); } }

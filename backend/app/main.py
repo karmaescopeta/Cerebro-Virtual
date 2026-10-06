@@ -1147,8 +1147,10 @@ def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: 
                             "-q", full_prompt, "--format", "stream-json"]
             result = subprocess.run(cmd_fallback, capture_output=True, text=True, timeout=timeout)
             if result.returncode != 0:
-                # ponytail: hermes manda algunos errores por stdout (401 del proveedor) — no solo stderr
-                raise RuntimeError((result.stderr or result.stdout)[-500:])
+                # v1.5.4: stderr+stdout combinados — antes, con salida vacía, el chat mostraba
+                # "Error:" sin texto (imposible diagnosticar). Si no hay nada útil, pista de causa común.
+                tail = ((result.stderr or "") + "\n" + (result.stdout or "")).strip()[-500:]
+                raise RuntimeError(tail or "El asistente no dio detalles del error — si acabas de instalar o mover este cerebro, completa el asistente de configuración (wizard) desde la web y reintenta.")
     except subprocess.TimeoutExpired:
         _kill_orphan_hermes()
         raise
@@ -3571,7 +3573,18 @@ async def get_version():
         version = version_file.read_text().strip()
     else:
         version = "unknown"
-    return {"current": version, "githubRepo": os.getenv("GITHUB_REPO", "")}
+    # v1.5.4: puertos reales de ESTE cerebro, leídos de su .env (fuente de verdad) —
+    # los links de la web (OmniRoute, panel del agente) se construyen con ellos,
+    # no con hardcodes: cada cerebro tiene sus puertos y no cambian.
+    ports = {}
+    try:
+        for ln in Path("/app/.env").read_text(encoding="utf-8", errors="ignore").splitlines():
+            k, _, v = ln.partition("=")
+            if k.strip() in ("FRONTEND_PORT", "BACKEND_PORT", "AGENT_PORT", "SEARXNG_PORT", "OMNIROUTE_PORT") and v.strip().isdigit():
+                ports[k.strip().replace("_PORT", "").lower()] = int(v.strip())
+    except Exception:
+        pass
+    return {"current": version, "githubRepo": os.getenv("GITHUB_REPO", ""), "ports": ports}
 
 
 # ============================================

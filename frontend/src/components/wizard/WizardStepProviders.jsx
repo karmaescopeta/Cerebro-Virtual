@@ -1,6 +1,7 @@
 import React from 'react'
 import StepIndicator from './StepIndicator'
 import WizardInfo from './WizardInfo'
+import { containerUrl } from '../../lib/ports.js'
 
 const COMBOS = [
   { name: 'chat-default', what: 'Hablar contigo' },
@@ -47,7 +48,7 @@ function WizardStepProviders({ onNext, onBack }) {
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>arrow_back</span>
             Atrás
           </button>
-          <button className="btn btn-secondary" onClick={() => { window.open('/omniroute/', '_blank') }}>
+          <button className="btn btn-secondary" onClick={async () => { window.open(await containerUrl('omniroute', 20128), '_blank') }}>
             <span className="material-symbols-outlined" style={{ fontSize: 18 }}>open_in_new</span>
             Abrir panel de OmniRoute
           </button>

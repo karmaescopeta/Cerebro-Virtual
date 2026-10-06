@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.5.3"
+GESTOR_VERSION = "1.5.4"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 IS_WIN = os.name == "nt"
@@ -585,6 +585,78 @@ def move_cerebros(items):
             lines.append(f"Error: {e}")
         with LOG_LOCK:
             b = START_LOGS.get("task:move")
+            if b is not None:
+                b["lines"] = (b["lines"] + lines)[-200:]
+                b.update(done=True, ok=ok)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"success": True}
+
+
+def update_system():
+    """v1.5.4: re-descarga el código del sistema (imagen_Sistema_Base) y lo sustituye.
+    Los cerebros y sus datos NO se tocan. Los encendidos se paran un momento, se
+    reconstruyen con el código nuevo y vuelven solos. Log en START_LOGS['task:update']."""
+    if not _compose_file_at(BASE_DIR).exists():
+        return {"error": "No hay sistema instalado"}
+    if START_LOGS.get("task:update", {}).get("done") is False:
+        return {"error": "Ya se está actualizando"}
+    with LOG_LOCK:
+        START_LOGS["task:update"] = {"lines": [], "done": False, "ok": False}
+
+    def worker():
+        global COMPOSE_FILE
+        lines, ok = [], False
+        old = BASE_DIR / "_old_system"
+        try:
+            # 1) cerebros encendidos: parar (los bind mounts al código se liberan)
+            running = [i["name"] for i in list_instances() if i["status"] == "running"]
+            if running:
+                lines.append(f"Parando cerebros encendidos ({', '.join(running)})…")
+                for name in running:
+                    cmd, env = compose_cmd(name, "stop")
+                    run(cmd, timeout=300)
+            # 2) descargar el código nuevo a temporal (streaming, no entero en memoria)
+            lines.append("Descargando la última versión del sistema…")
+            tmp = BASE_DIR / "_update_tmp"
+            shutil.rmtree(tmp, ignore_errors=True); tmp.mkdir()
+            req = urllib.request.Request(REPO_ZIP_URL, headers={"User-Agent": "GestorDeCerebros"})
+            with urllib.request.urlopen(req, timeout=60) as r, open(tmp / "sys.zip", "wb") as f:
+                shutil.copyfileobj(r, f)
+            with zipfile.ZipFile(tmp / "sys.zip") as z:
+                if any(m.filename.startswith(("..", "/", "\\")) for m in z.infolist()):
+                    raise RuntimeError("zip con rutas inseguras")
+                z.extractall(tmp)
+            new = next((d for d in tmp.iterdir() if d.is_dir() and d.name.startswith("Cerebro-Virtual") and (d / "docker-compose.yml").exists()), None)
+            if new is None:
+                raise RuntimeError("la descarga no trajo el sistema")
+            # 3) intercambio: viejo → _old_system, nuevo → imagen_Sistema_Base (con rollback)
+            sub = BASE_DIR / SYSTEM_SUBDIR
+            shutil.rmtree(old, ignore_errors=True)
+            if sub.exists():
+                sub.rename(old)
+            try:
+                new.rename(sub)
+            except Exception:
+                if old.exists() and not sub.exists():
+                    old.rename(sub)  # rollback — el sistema viejo vuelve
+                raise
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(old, ignore_errors=True)  # v1.5.4: el viejo se va del todo — la carpeta queda limpia
+            COMPOSE_FILE = _compose_file_at(BASE_DIR)
+            lines.append("Código nuevo instalado.")
+            ok = True
+            # 4) re-encender los que estaban encendidos (cada uno con su propio panel de log)
+            for name in running:
+                lines.append(f"Reconstruyendo {name}…")
+                instance_start(name)
+            lines.append("Listo" + (f" — {len(running)} cerebro(s) encendiéndose de nuevo" if running else ""))
+        except Exception as e:
+            lines.append(f"Error: {e}")
+            if old.exists():
+                lines.append("(El sistema anterior sigue en su sitio — nada se ha perdido)")
+        with LOG_LOCK:
+            b = START_LOGS.get("task:update")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -1345,7 +1417,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path.startswith("/api/logs/"):
             name = urllib.parse.unquote(self.path.split("/api/logs/")[1])
             # v1.5 (C4): las tareas del gestor llevan prefijo task: — un cerebro llamado 'setup' tiene SU propio log
-            if not (valid_name(name) or name in ("task:setup", "task:deps", "task:move", "task:dockermove", "task:relocate")):
+            if not (valid_name(name) or name in ("task:setup", "task:deps", "task:move", "task:dockermove", "task:relocate", "task:update")):
                 self._json({"error": "Nombre inválido"}, 400); return
             with LOG_LOCK:
                 buf = START_LOGS.get(name) or {"lines": [], "done": True, "ok": False}
@@ -1400,6 +1472,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._json(install_deps()); return
         if self.path == "/api/start-docker":
             self._json(start_docker()); return
+        if self.path == "/api/update-system":
+            self._json(update_system()); return
         if self.path == "/api/set-base":
             self._json(set_base(body.get("path", ""))); return
         if self.path == "/api/move-docker-data":

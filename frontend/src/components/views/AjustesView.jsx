@@ -1,5 +1,6 @@
 import React, { useRef } from 'react'
 import { applyPalette, clearPalette, localPalettes, saveLocalPalette, deleteLocalPalette, localActivePal, setLocalActive, primaryOk, secondaryOk, relLum, onColor, getWebLogo, setWebLogo, getWebFavicon, setWebFavicon, applyWebFavicon } from '../../webTheme.js'
+import { containerUrl } from '../../lib/ports.js'
 
 function AjustesView({
   editAgentName, editPersonality, editingAgent, editSaving, editMessage, editMessageType,
@@ -17,6 +18,14 @@ function AjustesView({
   const [showFactoryInfo, setShowFactoryInfo] = React.useState(false)
     const [resetStep, setResetStep] = React.useState(0)
     const [remoteVer, setRemoteVer] = React.useState(null)
+    // v1.5.4: links a los paneles con los puertos REALES de este cerebro (su .env), no hardcodes
+    const [panelUrls, setPanelUrls] = React.useState({})
+    React.useEffect(() => {
+      (async () => setPanelUrls({
+        agent: await containerUrl('agent', 8080),
+        omniroute: await containerUrl('omniroute', 20128),
+      }))().catch(() => {})
+    }, [])
 
     React.useEffect(() => {
       fetch('https://raw.githubusercontent.com/karmaescopeta/Cerebro-Virtual/main/VERSION')
@@ -247,10 +256,10 @@ function AjustesView({
                 </div>
               )}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 'var(--space-4)', marginTop: 'var(--space-4)' }}>
-                <a href="http://localhost:8080" target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                <a href={panelUrls.agent || 'http://localhost:8080'} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
                   <ActionCard icon="psychology" title="Hermes Agent" desc="Dashboard del agente (sistema-agente)" />
                 </a>
-                <a href="http://localhost:20128" target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                <a href={panelUrls.omniroute || 'http://localhost:20128'} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
                   <ActionCard icon="memory" title="OmniRoute" desc="Gateway de modelos IA. Solo desde este PC." />
                 </a>
               </div>
