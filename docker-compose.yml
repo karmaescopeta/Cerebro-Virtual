@@ -99,6 +99,11 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    # v1.5.8: sin esto Ollama sirve con ctx 4096 por defecto — el prompt del sistema de
+    # Hermes llega a ~11-12k tokens y el chat LOCAL muere con "exceeds context size".
+    # Los modelos recortan solos a su máximo si soportan menos.
+    environment:
+      - OLLAMA_CONTEXT_LENGTH=32768
     volumes:
       - ollama-models:/root/.ollama
     networks:
