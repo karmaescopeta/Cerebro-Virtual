@@ -4339,7 +4339,16 @@ async def _startup_provision_combos():
         await asyncio.sleep(8)
         try:
             ia = get_ia_mode()
-            if not ia.get("combosProvisioned"):
+            # v1.5.7: el flag puede mentir — un cerebro IMPORTADO/movido trae combosProvisioned=true
+            # del sistema viejo mientras su OmniRoute es nuevo (volumen vacío, 0 combos).
+            # Chequear el recurso real: flag false O OmniRoute sin combos → provisionar.
+            empty_omni = False
+            if ia.get("combosProvisioned"):
+                r = await _omni_client.post("/api/auth/login", json={"password": _omni_password()})
+                if r.status_code == 200:
+                    rc = await _omni_client.get("/api/combos")
+                    empty_omni = rc.status_code == 200 and not (rc.json().get("combos") or [])
+            if not ia.get("combosProvisioned") or empty_omni:
                 res = await _omni_provision_combos(ia.get("mode", "cloud"))
                 print(f"🔵 provision combos arranque: {res.get('success')} {res.get('created', [])} {res.get('errors', [])}")
         except Exception as e:
