@@ -1110,7 +1110,11 @@ def _ask_hermes(profile: str, prompt: str, history: list[dict] = None, timeout: 
     """docker exec con perfil via HERMES_CONFIG, inyecta historial (últimos 10 msgs).
     ponytail: Hermes no tiene flag -p. Los perfiles son config.yaml separados.
     Se cargan via HERMES_CONFIG apuntando al config del perfil.
-    El modelo va por flag (-m) → toggle local/cloud sin reconfigurar el perfil."""
+    El modelo va por flag (-m) → toggle local/cloud sin reconfigurar el perfil.
+    v1.5.8: modo LOCAL = modelo en este ordenador (9B+ en CPU/GPU, prefill ~12k tokens):
+    120s se quedaba corto y el chat moría en timeout — piso de 300s para local."""
+    if local:
+        timeout = max(timeout, 300)
     # ponytail: inyectar historial como contexto
     full_prompt = prompt
     if history:
