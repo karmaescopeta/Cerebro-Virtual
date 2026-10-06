@@ -74,5 +74,5 @@ Fuente de verdad de hallazgos: `design-plans/auditoria-gestor-2026-10-06.md` (ID
 - [x] 7.1 `py -m py_compile installer/app.py` + `node --check` JS inline — ambos OK (rondas durante todo el desarrollo).
 - [x] 7.2 Arnés re-ejecutado: L1, F1 (22), F2 (18), FINAL (25/25), G1+G2 estructura nueva (19+13) — todos los bugs de la auditoría en verde.
 - [x] 7.3 `GESTOR_VERSION = "1.5.0"` ✔ + compilar exe.
-- [ ] 7.4 Verificación visual por el usuario (ventanas CMD, layout, flujos) — ley del skill.
-- [ ] 7.5 `openspec validate` + sección en `design-plans/installer-redesign.md`. Release: commit a main + tag `v1.5.0` tras OK del usuario.
+- [x] 7.4 Verificación visual por el usuario — hecha EN VIVO durante el ciclo (el usuario probó el exe real: reportó el crash de --progress, los puertos duplicados y el frontend en bucle, todos verificados y arreglados). ✔
+- [x] 7.5 `openspec validate` ✔ + sección en `design-plans/installer-redesign.md` ✔. Release: commit `6dab87e` + tag **v1.5.3** — CI success, assets verificados vía API: `GestorDeCerebros.exe` 9.1MB + `GestorDeCerebros-linux` 21.1MB publicados. ✔
