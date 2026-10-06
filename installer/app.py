@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.4.1"
+GESTOR_VERSION = "1.5.3"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 IS_WIN = os.name == "nt"
@@ -16,6 +16,17 @@ _DL_URLS = {
 }
 _WINGET_PKGS = {"docker": "Docker.DockerDesktop", "git": "Git.Git", "python": "Python.Python.3.12"}
 _APT_PKGS = {"docker": "docker.io", "git": "git", "python": "python3"}
+# v1.5: el CÓDIGO del sistema vive en su propia subcarpeta — gestor_de_cerebros queda
+# legible: una carpeta por cerebro (+ esta). Un nombre por diseño: el usuario la reconoce.
+SYSTEM_SUBDIR = "imagen_Sistema_Base"
+
+
+def _compose_file_at(base):
+    """docker-compose.yml de una base cualquiera: raíz (instalaciones <= v1.4) o
+    imagen_Sistema_Base/ (v1.5+). Devuelve la ruta aunque no exista — el caller hace .exists()."""
+    if (base / "docker-compose.yml").exists():
+        return base / "docker-compose.yml"
+    return base / SYSTEM_SUBDIR / "docker-compose.yml"
 
 
 def _config_file() -> Path:
@@ -30,17 +41,17 @@ def _find_base() -> Path:
     (proyecto descargado como hijo del exe); fallback = legacy installer/dist/."""
     try:
         saved = json.loads(_config_file().read_text(encoding="utf-8")).get("base", "")
-        if saved and (Path(saved) / "docker-compose.yml").exists():
+        if saved and _compose_file_at(Path(saved)).exists():
             return Path(saved)
     except Exception:
         pass
     frozen = getattr(sys, "frozen", False)
     start = Path(sys.executable).resolve().parent if frozen else Path(__file__).resolve().parent.parent
-    for child in ("gestor_de_cerebros", "cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual"):  # instalación de un solo archivo
-        if (start / child / "docker-compose.yml").exists():
+    for child in ("gestor_de_cerebros", "cerebro_virtual", "Cerebro-Virtual-main", "Cerebro-Virtual", SYSTEM_SUBDIR):  # instalación de un solo archivo
+        if _compose_file_at(start / child).exists():
             return start / child
     for p in [start, *start.parents][:8]:
-        if (p / "docker-compose.yml").exists():
+        if _compose_file_at(p).exists():
             return p
     # v1.4.1: sin sistema por near — el fallback es la carpeta del propio exe (o repo en dev).
     # parents[2] saltaba con IndexError si el exe estaba en una carpeta poco profunda (C:\X\Gestor.exe)
@@ -50,7 +61,7 @@ BASE_DIR = _find_base()
 
 # v1.4: los cerebros viven DIRECTO en la carpeta general: gestor_de_cerebros\<cerebro>\
 INSTANCES_DIR = BASE_DIR
-COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
+COMPOSE_FILE = _compose_file_at(BASE_DIR)
 
 
 def _refresh_base():
@@ -58,7 +69,7 @@ def _refresh_base():
     global BASE_DIR, INSTANCES_DIR, COMPOSE_FILE
     BASE_DIR = _find_base()
     INSTANCES_DIR = BASE_DIR
-    COMPOSE_FILE = BASE_DIR / "docker-compose.yml"
+    COMPOSE_FILE = _compose_file_at(BASE_DIR)
     _migrate_old()
 
 
@@ -76,10 +87,38 @@ def _migrate_old():
         pass
 
 
+def _migrate_system_subdir():
+    """v1.5: hasta ahora TODO el código del sistema se descomprimía en la raíz de
+    gestor_de_cerebros, mezclado con las carpetas de los cerebros. Moverlo a
+    imagen_Sistema_Base/ para que la carpeta general sea legible: una carpeta por cerebro.
+    Solo el binario (en el repo de desarrollo NO — rompería el árbol de git)."""
+    if not getattr(sys, "frozen", False):
+        return
+    if not (BASE_DIR / "docker-compose.yml").exists():
+        return  # ya migrado (v1.5 instala directo en el subdir) o sin sistema
+    if (BASE_DIR / ".git").exists():
+        return  # clon git: mover rompería el repo y las actualizaciones
+    try:
+        sub = BASE_DIR / SYSTEM_SUBDIR
+        sub.mkdir(exist_ok=True)
+        for item in list(BASE_DIR.iterdir()):
+            if item.name in (SYSTEM_SUBDIR, "relocating.json", "instances"):
+                continue
+            if item.is_dir() and (item / ".env").exists():
+                continue  # carpeta de un cerebro — se queda
+            if item.name in (".env", "vault"):
+                continue  # cerebro suelto legado — lo organiza tidy-root, con permiso del usuario
+            shutil.move(str(item), str(sub / item.name))
+    except Exception:
+        pass  # best-effort: lo que no se mueva, sigue funcionando (rutas absolutas de los .env no cambian)
+
+
 PORT_RANGES = {"FRONTEND_PORT": 5173, "BACKEND_PORT": 8000, "AGENT_PORT": 8080, "SEARXNG_PORT": 8888, "OMNIROUTE_PORT": 20128}
 
 if COMPOSE_FILE.exists():
     _migrate_old()  # al arrancar también (no solo tras descargar)
+    _migrate_system_subdir()  # v1.5: código del sistema a imagen_Sistema_Base/
+    COMPOSE_FILE = _compose_file_at(BASE_DIR)  # la migración movió el compose — recalcular
 
 # En exe windowed (console=False), sin este flag cada hijo abre una ventana CMD visible
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -180,8 +219,16 @@ def _dir_size(path):
     return total
 
 
+_LIST_CACHE = {"at": 0.0, "data": None}
+
+
 def list_instances():
-    if not INSTANCES_DIR.exists(): return []
+    # v1.5 (M3): el auto-refresh (5s) llama docker ps+stats+images+netstat cada vez (~2s de CPU).
+    # Cache 2.5s — las acciones de create/start/stop/remove la invalidan.
+    if _LIST_CACHE["data"] is not None and time.time() - _LIST_CACHE["at"] < 2.5:
+        return _LIST_CACHE["data"]
+    if not INSTANCES_DIR.exists():
+        return []
     result = []
     for d in sorted(INSTANCES_DIR.iterdir()):
         if not (d / ".env").exists(): continue
@@ -224,30 +271,41 @@ def list_instances():
             if repo.startswith(i["project"] + "-"):
                 total += _parse_size(size)
         i["size_gb"] = f"{total / (1024**3):.1f}GB"
+    _LIST_CACHE.update(at=time.time(), data=result)
     return result
+
+
+def _list_invalidate():
+    _LIST_CACHE.update(at=0.0)
 
 
 def instance_create(name):
     inst = INSTANCES_DIR / name
     if inst.exists(): return {"error": "Ya existe"}
-    for sub in ["vault/raw/.processed", "vault/wiki", "vault/outputs", "vault/system", "vault/chat-sesiones"]:
-        (inst / sub).mkdir(parents=True, exist_ok=True)
-    default_cfg = INSTANCES_DIR / "default" / "agent-config.yaml"
-    if default_cfg.exists(): shutil.copy2(default_cfg, inst / "agent-config.yaml")
-    ports = auto_ports()
-    base_fwd = str(BASE_DIR).replace("\\", "/")
-    (inst / ".env").write_text(
-        f"COMPOSE_PROJECT_NAME={proj_name(name)}\nOPENROUTER_API_KEY=\n"  # v1.4.1: docker exige minúsculas
-        f"BACKEND_PORT={ports['BACKEND_PORT']}\nFRONTEND_PORT={ports['FRONTEND_PORT']}\n"
-        f"AGENT_PORT={ports['AGENT_PORT']}\nSEARXNG_PORT={ports['SEARXNG_PORT']}\n"
-        f"OMNIROUTE_PORT={ports['OMNIROUTE_PORT']}\n"
-        # v1.3: VAULT_HOST_PATH con / — igual que VAULT_DIR; Docker/Windows acepta ambas, Linux necesita /
-        # v1.4: cerebro directo en la raíz (gestor_de_cerebros\<name>), sin instances\
-        # v1.4.1: COMPOSE_PROJECT_NAME normalizado (docker exige minúsculas); la carpeta conserva el nombre tal cual
-        f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/{name}/vault\n"
-        f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/{name}/vault\n"
-        f"ENV_FILE={base_fwd}/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/{name}\n",
-        encoding="utf-8")
+    try:
+        for sub in ["vault/raw/.processed", "vault/wiki", "vault/outputs", "vault/system", "vault/chat-sesiones"]:
+            (inst / sub).mkdir(parents=True, exist_ok=True)
+        default_cfg = INSTANCES_DIR / "default" / "agent-config.yaml"
+        if default_cfg.exists(): shutil.copy2(default_cfg, inst / "agent-config.yaml")
+        ports = auto_ports()
+        base_fwd = str(BASE_DIR).replace("\\", "/")
+        (inst / ".env").write_text(
+            f"COMPOSE_PROJECT_NAME={proj_name(name)}\nOPENROUTER_API_KEY=\n"  # v1.4.1: docker exige minúsculas
+            f"BACKEND_PORT={ports['BACKEND_PORT']}\nFRONTEND_PORT={ports['FRONTEND_PORT']}\n"
+            f"AGENT_PORT={ports['AGENT_PORT']}\nSEARXNG_PORT={ports['SEARXNG_PORT']}\n"
+            f"OMNIROUTE_PORT={ports['OMNIROUTE_PORT']}\n"
+            # v1.3: VAULT_HOST_PATH con / — igual que VAULT_DIR; Docker/Windows acepta ambas, Linux necesita /
+            # v1.4: cerebro directo en la raíz (gestor_de_cerebros\<name>), sin instances\
+            # v1.4.1: COMPOSE_PROJECT_NAME normalizado (docker exige minúsculas); la carpeta conserva el nombre tal cual
+            f"CLOUDFLARE_TUNNEL_TOKEN=\nVAULT_HOST_PATH={base_fwd}/{name}/vault\n"
+            f"GITHUB_REPO=\nVAULT_DIR={base_fwd}/{name}/vault\n"
+            f"ENV_FILE={base_fwd}/{name}/.env\nAGENT_CONFIG_DIR={base_fwd}/{name}\n",
+            encoding="utf-8")
+    except Exception as e:
+        # v1.5 (C1): cualquier fallo del filesystem devuelve JSON — jamás rompe la conexión
+        shutil.rmtree(inst, ignore_errors=True)  # sin restos a medias
+        return {"error": f"No pude crear la carpeta del cerebro: {e}"}
+    _list_invalidate()
     return {"success": True, "ports": ports}
 
 
@@ -257,7 +315,7 @@ def download_project(dest_str=""):
     cerebros y vaults viven todos dentro de esa carpeta. Se recuerda en gestor.json.
     Progreso en START_LOGS['setup'] (mismo mecanismo de polling que el arranque)."""
     if COMPOSE_FILE.exists():
-        return {"error": "El proyecto ya está descargado"}
+        return {"error": "El sistema ya está instalado"}
     target = Path(dest_str.strip()) if (dest_str or "").strip() else None
     if target is not None:
         if not target.is_absolute():
@@ -266,10 +324,10 @@ def download_project(dest_str=""):
             target.mkdir(parents=True, exist_ok=True)  # valida permisos ahora, no en el thread
         except Exception as e:
             return {"error": f"No puedo escribir en {target}: {e}"}
-    if START_LOGS.get("setup", {}).get("done") is False:
+    if START_LOGS.get("task:setup", {}).get("done") is False:
         return {"error": "Ya se está descargando"}
     with LOG_LOCK:
-        START_LOGS["setup"] = {"lines": [], "done": False, "ok": False}
+        START_LOGS["task:setup"] = {"lines": [], "done": False, "ok": False}
 
     def worker():
         lines, ok = [], False
@@ -298,26 +356,26 @@ def download_project(dest_str=""):
                 if any(m.filename.startswith(("..", "/", "\\")) for m in z.infolist()):
                     raise RuntimeError("zip con rutas inseguras")
                 z.extractall(dest)
-            # v1.4: carpeta general con el nombre del sistema — el zip trae "Cerebro-Virtual-main"
-            extracted = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
-            if extracted and extracted.name != "gestor_de_cerebros":
-                renamed = dest / "gestor_de_cerebros"
-                if not renamed.exists():
-                    extracted.rename(renamed)
+            # v1.5 (M1): buscar SOLO entre las carpetas del zip — cualquier otra previa con compose no es nuestra
+            extracted = next((d for d in dest.iterdir() if d.is_dir() and d.name.startswith("Cerebro-Virtual") and (d / "docker-compose.yml").exists()), None)
+            # v1.5: carpeta general LEGIBLE — gestor_de_cerebros solo contiene una carpeta por
+            # cerebro; todo el código del sistema vive dentro de imagen_Sistema_Base
+            gestor = dest / "gestor_de_cerebros"
+            gestor.mkdir(exist_ok=True)
+            if extracted is not None and not (gestor / SYSTEM_SUBDIR).exists():
+                extracted.rename(gestor / SYSTEM_SUBDIR)
             zpath.unlink()
             # v1.4: persistir la carpeta elegida ANTES de _refresh_base — _find_base solo mira
             # hijos/padres del exe, así que sin gestor.json un proyecto en otro disco quedaría huérfano
-            if target is not None:
-                final = next((d for d in dest.iterdir() if d.is_dir() and (d / "docker-compose.yml").exists()), None)
-                if final:
-                    _config_file().write_text(json.dumps({"base": str(final)}), encoding="utf-8")
+            if target is not None and _compose_file_at(gestor).exists():
+                _config_file().write_text(json.dumps({"base": str(gestor)}), encoding="utf-8")
             _refresh_base()
             ok = COMPOSE_FILE.exists()
-            lines.append(f"Proyecto listo en: {BASE_DIR}" if ok else "Error: proyecto no encontrado tras descomprimir")
+            lines.append(f"Sistema instalado en: {BASE_DIR}" if ok else "Error: no encontré el sistema tras descomprimir")
         except Exception as e:
             lines.append(f"Error: {e}")
         with LOG_LOCK:
-            b = START_LOGS.get("setup")
+            b = START_LOGS.get("task:setup")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -330,10 +388,10 @@ def install_deps():
     """v1.4: botón 'Instalar dependencias' — instala de golpe lo que falte (docker/git/python):
     winget en Windows (salta el UAC, el usuario acepta), apt+sudo en Linux (contraseña en la terminal).
     Si winget no existe, abre las páginas de descarga. Progreso en START_LOGS['deps']."""
-    if START_LOGS.get("deps", {}).get("done") is False:
+    if START_LOGS.get("task:deps", {}).get("done") is False:
         return {"error": "Ya se está instalando"}
     with LOG_LOCK:
-        START_LOGS["deps"] = {"lines": [], "done": False, "ok": False}
+        START_LOGS["task:deps"] = {"lines": [], "done": False, "ok": False}
 
     def worker():
         lines, ok = [], True
@@ -350,9 +408,10 @@ def install_deps():
             elif IS_WIN:
                 rc, _, _ = run(["winget", "--version"], timeout=15)
                 if rc != 0:
-                    lines.append("winget no disponible — abriendo páginas de descarga")
+                    # v1.5 (M4): las URLs van al log (clicables en el panel) — no bombardeo de pestañas
+                    lines.append("Sin winget — descarga e instala a mano (los enlaces, en el log):")
                     for k in missing:
-                        webbrowser.open(_DL_URLS[k])
+                        lines.append(f"  {k}: {_DL_URLS[k]}")
                 else:
                     for k in missing:
                         lines.append(f"Instalando {_WINGET_PKGS[k]} — acepta el aviso de Windows si aparece")
@@ -388,7 +447,7 @@ def install_deps():
             ok = False
             lines.append(f"Error: {e}")
         with LOG_LOCK:
-            b = START_LOGS.get("deps")
+            b = START_LOGS.get("task:deps")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -426,16 +485,27 @@ def set_base(path_str):
         return {"error": "La ruta debe ser absoluta (ej: D:\\Gestor de Cerebros)"}
     if not p.is_dir():
         return {"error": f"La carpeta no existe: {p}"}
-    base = p if (p / "docker-compose.yml").exists() else next(
-        (c for c in p.iterdir() if c.is_dir() and (c / "docker-compose.yml").exists()), None)
+
+    def _is_sys(d):
+        return (d / "docker-compose.yml").exists() or (d / SYSTEM_SUBDIR / "docker-compose.yml").exists()
+    base = None
+    if p.name == SYSTEM_SUBDIR and _is_sys(p):
+        base = p.parent  # señalaron imagen_Sistema_Base directamente — el sistema es su carpeta padre
+    elif _is_sys(p):
+        base = p
+    else:
+        base = next((c for c in p.iterdir() if c.is_dir() and _is_sys(c)), None)
     if base is None:
         return {"error": f"En {p} no hay ningún sistema instalado (busco su archivo de configuración ahí y un nivel abajo). "
-                         f"Si lo que quieres es TRAER tu sistema a esta carpeta, usa el botón «Mover todo a otra carpeta»"}
+                         f"Si lo que quieres es TRAER tu sistema a esta carpeta, usa Ajustes → «Mover todo»"}
     try:
         _config_file().write_text(json.dumps({"base": str(base)}), encoding="utf-8")
     except Exception as e:
         return {"error": f"No puedo guardar el ajuste: {e}"}
+    global COMPOSE_FILE
     _refresh_base()
+    _migrate_system_subdir()  # v1.5: si era una instalación vieja, su código va a imagen_Sistema_Base
+    COMPOSE_FILE = _compose_file_at(BASE_DIR)
     _rewrite_envs()
     return {"success": True, "base": str(BASE_DIR), "instances": len(list_instances())}
 
@@ -466,6 +536,8 @@ def find_other_cerebros():
                 if not cfg or not name:
                     continue
                 base = Path(cfg).resolve().parent
+                if base.name == SYSTEM_SUBDIR:
+                    base = base.parent  # v1.5: el compose vive en imagen_Sistema_Base — los cerebros están un nivel arriba
                 if base == Path(BASE_DIR).resolve():
                     continue
                 if _inst_dir(base, name) is None:
@@ -481,7 +553,7 @@ def move_cerebros(items):
     """v1.4: mover cerebros encontrados en otras carpetas a la carpeta central.
     Los para (aviso previo al usuario), muda la carpeta completa de cada uno
     (vault + ajustes) y regenera los .env. Log en START_LOGS['move']."""
-    if START_LOGS.get("move", {}).get("done") is False:
+    if START_LOGS.get("task:move", {}).get("done") is False:
         return {"error": "Ya se está moviendo"}
     clean = [{"base": str(Path(i["base"]).resolve()), "name": i["name"]}
              for i in (items or []) if valid_name(i.get("name", ""))]
@@ -493,7 +565,7 @@ def move_cerebros(items):
         if (INSTANCES_DIR / i["name"]).exists():
             return {"error": f"Ya existe un cerebro llamado {i['name']} aquí — renómbralo o bórralo antes"}
     with LOG_LOCK:
-        START_LOGS["move"] = {"lines": [], "done": False, "ok": False}
+        START_LOGS["task:move"] = {"lines": [], "done": False, "ok": False}
 
     def worker():
         lines, ok = [], True
@@ -502,7 +574,7 @@ def move_cerebros(items):
                 src = _inst_dir(i["base"], i["name"])
                 lines.append(f"Moviendo {i['name']} (desde {i['base']})...")
                 project = proj_name(read_env_path(src / ".env").get("COMPOSE_PROJECT_NAME", i["name"]))  # v1.4.1
-                run(["docker", "compose", "-p", project, "-f", str(Path(i["base"]) / "docker-compose.yml"),
+                run(["docker", "compose", "-p", project, "-f", str(_compose_file_at(Path(i["base"]))),
                      "--env-file", str(src / ".env"), "stop"], timeout=120)
                 shutil.move(str(src), str(INSTANCES_DIR / i["name"]))
                 lines.append(f"{i['name']} mudado")
@@ -512,7 +584,7 @@ def move_cerebros(items):
             ok = False
             lines.append(f"Error: {e}")
         with LOG_LOCK:
-            b = START_LOGS.get("move")
+            b = START_LOGS.get("task:move")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -532,8 +604,11 @@ def pick_folder():
               "$f.ShowNewFolderButton = $true; "
               "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }")
         rc, out, _ = run(["powershell", "-NoProfile", "-STA", "-Command", ps], timeout=900)
-        path = out.strip() if rc == 0 else ""
-        return {"path": path or None}
+        if rc == 0:
+            path = out.strip()
+            return {"path": path or None}  # vacío = usuario canceló
+        # v1.5 (M5): timeout/fallojo del selector → mensaje claro, no silencio
+        return {"error": "No pude abrir el explorador de carpetas — inténtalo otra vez (o usa el explorador de esta ventana)"}
     rc, out, _ = run(["zenity", "--file-selection", "--directory", "--title", "Elige la carpeta del sistema"], timeout=900)
     if rc == 0:
         return {"path": out.strip() or None}
@@ -599,7 +674,7 @@ def relocate(dest_str):
     carpeta/disco. Para los cerebros encendidos, mueve todo y vuelve a encenderlos. Log en START_LOGS['relocate']."""
     if not COMPOSE_FILE.exists():
         return {"error": "No hay sistema instalado"}
-    if START_LOGS.get("relocate", {}).get("done") is False:
+    if START_LOGS.get("task:relocate", {}).get("done") is False:
         return {"error": "Ya se está mudando"}
     dest = Path((dest_str or "").strip())
     if not str(dest) or not dest.is_absolute():
@@ -613,7 +688,7 @@ def relocate(dest_str):
         return {"error": "No puedes elegir una carpeta que CONTIENE al sistema (su carpeta padre o superior) — elige una carpeta aparte"}
     if target.resolve().is_relative_to(Path(BASE_DIR).resolve()):
         return {"error": "No puedes elegir una carpeta de DENTRO del sistema — elige una carpeta fuera de él"}
-    if (target / "docker-compose.yml").exists():
+    if _compose_file_at(target).exists():  # v1.5: también si ya tiene imagen_Sistema_Base dentro
         # v1.4.1: puede ser el resto de una mudanza anterior que quedó a medias — el marcador lo dice
         partial = False
         try:
@@ -639,7 +714,7 @@ def relocate(dest_str):
         exe = None
     exe_inside = bool(exe and exe.is_relative_to(Path(BASE_DIR).resolve()))
     with LOG_LOCK:
-        START_LOGS["relocate"] = {"lines": [], "done": False, "ok": False}
+        START_LOGS["task:relocate"] = {"lines": [], "done": False, "ok": False}
 
     def worker():
         lines, ok = [], False
@@ -680,7 +755,7 @@ def relocate(dest_str):
             if not ok:
                 lines.append(f"Si algo quedó a medias, lo que ya se movió está en {target} — no borres nada")
         with LOG_LOCK:
-            b = START_LOGS.get("relocate")
+            b = START_LOGS.get("task:relocate")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -787,12 +862,12 @@ def move_docker_data(dest_str=""):
     al arrancar. Apaga Docker durante el proceso; revierte si no responde. Log en START_LOGS['dockermove']."""
     if not IS_WIN:
         return {"error": "Solo Docker Desktop en Windows — en Linux docker ya usa /var/lib/docker"}
-    if START_LOGS.get("dockermove", {}).get("done") is False:
+    if START_LOGS.get("task:dockermove", {}).get("done") is False:
         return {"error": "Ya se está moviendo"}
     root = Path((dest_str or "").strip()) if (dest_str or "").strip() else BASE_DIR.parent
     target = root / "docker-data"
     with LOG_LOCK:
-        START_LOGS["dockermove"] = {"lines": [], "done": False, "ok": False}
+        START_LOGS["task:dockermove"] = {"lines": [], "done": False, "ok": False}
 
     def worker():
         lines, ok = [], False
@@ -859,7 +934,7 @@ def move_docker_data(dest_str=""):
         except Exception as e:
             lines.append(f"Error: {e}")
         with LOG_LOCK:
-            b = START_LOGS.get("dockermove")
+            b = START_LOGS.get("task:dockermove")
             if b is not None:
                 b["lines"] = (b["lines"] + lines)[-200:]
                 b.update(done=True, ok=ok)
@@ -887,29 +962,174 @@ def compose_cmd(name, *args):
     return cmd, full_env
 
 
+_PROGRESS = {"ok": None}  # cache del probe: ¿esta versión de docker compose admite --progress?
+
+
+def _compose_progress_ok():
+    """v1.5.1: 'unknown flag: --progress' en composes antiguos (Docker Desktop) —
+    comprobar UNA vez si el compose local lo admite antes de usarlo."""
+    if _PROGRESS["ok"] is None:
+        rc, out, _ = run(["docker", "compose", "up", "--help"], timeout=15)
+        _PROGRESS["ok"] = (rc == 0 and "--progress" in (out or ""))
+    return _PROGRESS["ok"]
+
+
+def _log_append(buf, s):
+    with LOG_LOCK:
+        buf["lines"] = (buf["lines"] + [s])[-200:]
+
+
+def _ensure_ports(name, log):
+    """v1.5.3: los puertos de un cerebro se asignan UNA VEZ y quedan FIJOS en su .env
+    (el túnel de Cloudflare apunta a ellos — reasignar en cada arranque lo desconfiguraría).
+    Reasigna SOLO si falta un puerto (.env viejo movido) o choca con el puerto declarado en
+    el .env de OTRO cerebro (colisión estructural, determinista: converge y no repite).
+    La ocupación runtime externa (programas del equipo, contenedores ajenos) NUNCA reasigna:
+    solo avisa — el puerto es de este cerebro y el intruso debe cerrarse."""
+    vals = read_env(name)
+    project = proj_name(vals.get("COMPOSE_PROJECT_NAME", name))
+    assigned = {k: int(vals[k]) for k in PORT_RANGES if str(vals.get(k, "")).strip().isdigit()}
+    missing = [k for k in PORT_RANGES if k not in assigned]
+    # 1) puertos declarados por los DEMÁS cerebros — la única colisión que reasigna
+    others = set()
+    if INSTANCES_DIR.exists():
+        for d in INSTANCES_DIR.iterdir():
+            if d.name == name or not (d / ".env").exists():
+                continue
+            for line in (d / ".env").read_text(encoding="utf-8", errors="ignore").splitlines():
+                for key in PORT_RANGES:
+                    if line.startswith(f"{key}="):
+                        v = line.split("=", 1)[1].strip()
+                        if v.isdigit(): others.add(int(v))
+    conflicts = {k for k, v in assigned.items() if v in others}
+    # 2) ocupación runtime (contenedores ajenos + netstat) — para elegir libres al asignar,
+    #    y para AVISAR (nunca reasignar) si un puerto fijo está ocupado por otro programa
+    runtime = set()
+    rc, out, _ = run(["docker", "ps", "--format", "{{.Names}}|{{.Ports}}"], timeout=10)
+    if rc == 0:
+        for ln in out.splitlines():
+            cname, _, ports = ln.partition("|")
+            if cname.startswith(f"{project}-"):
+                continue  # mi propio stack no cuenta
+            for m in re.finditer(r":(\d+)->", ports):
+                runtime.add(int(m.group(1)))
+    rc, out2, _ = run(["netstat", "-an"], timeout=10)
+    if rc == 0:
+        for line in out2.splitlines():
+            if "LISTENING" in line or "LISTEN" in line:
+                m2 = re.search(r":(\d+)\s", line)
+                if m2: runtime.add(int(m2.group(1)))
+    if not missing and not conflicts:
+        busy = sorted(v for v in assigned.values() if v in runtime)
+        if busy:
+            log(f"AVISO: el/los puerto(s) {', '.join(map(str, busy))} de este cerebro están ocupados ahora "
+                f"mismo por otro programa. NO los cambio — son fijos (por ejemplo, para el túnel de acceso "
+                f"remoto). Cierra ese programa y vuelve a dar a Iniciar.")
+        return  # puertos ya asignados y sin colisión estructural — NUNCA se tocan
+    used = set(others) | runtime
+    # conservar los míos que no chocan; los que faltan o chocan → primer libre desde la base
+    changed = {}
+    for key, base in PORT_RANGES.items():
+        if key in assigned and key not in conflicts:
+            continue
+        port = base
+        while port in used or port in assigned.values():
+            port += 1
+        used.add(port)
+        changed[key] = port
+    env_path = INSTANCES_DIR / name / ".env"
+    lines = env_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    seen, out_lines = set(), []
+    for ln in lines:
+        k = ln.split("=", 1)[0].strip() if "=" in ln else None
+        if k in changed:
+            out_lines.append(f"{k}={changed[k]}")
+            seen.add(k)
+        else:
+            out_lines.append(ln)
+    for k, v in changed.items():
+        if k not in seen:
+            out_lines.append(f"{k}={v}")
+    env_path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    pretty = ", ".join(f"{k.replace('_PORT', '').lower()} {v}" for k, v in changed.items())
+    log(f"Puertos asignados (quedan FIJOS a partir de ahora, p. ej. para el túnel de acceso remoto): {pretty}")
+
+
+def _postcheck_recreate(name, log):
+    """v1.5.2: docker a veces deja contenedores creados SIN conectar a la red del stack
+    (visto en real: frontend en bucle 'host not found in upstream backend' — 0 redes en
+    inspect). Tras el up, comprobar qué servicios no quedaron corriendo y recrearlos."""
+    try:
+        cmd, env = compose_cmd(name, "ps", "--all", "--format", "json")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env,
+                           creationflags=NO_WINDOW, errors="replace")
+        bad = []
+        for ln in (r.stdout or "").splitlines():  # NDJSON — línea a línea (pitfall compose v5)
+            ln = ln.strip()
+            if not ln:
+                continue
+            try:
+                c = json.loads(ln)
+            except Exception:
+                continue
+            state = str(c.get("State") or "").lower()
+            status = str(c.get("Status") or "").lower()
+            healthy = state == "running" or (not state and status.startswith("up"))
+            if not healthy:
+                svc = c.get("Service") or c.get("Name") or "?"
+                if svc not in bad:
+                    bad.append(svc)
+        if not bad:
+            return
+        log(f"Arreglando {', '.join(bad)} (no arrancaron bien)…")
+        args = ["up", "-d", "--force-recreate", "--no-deps", *bad]
+        if _compose_progress_ok():
+            args.append("--progress=plain")
+        rcmd, renv = compose_cmd(name, *args)
+        r2 = subprocess.run(rcmd, capture_output=True, text=True, timeout=300, env=renv,
+                           creationflags=NO_WINDOW, errors="replace")
+        for l in ((r2.stdout or "") + (r2.stderr or "")).splitlines():
+            log(l.rstrip())
+        log("Listo" if r2.returncode == 0 else "No pude arreglarlo del todo — revisa las líneas de arriba")
+    except Exception as e:
+        log(f"(comprobación post-arranque falló: {e})")
+
+
 def instance_start(name):
     if not (INSTANCES_DIR / name / ".env").exists(): return {"error": "No existe"}
     if START_LOGS.get(name, {}).get("done") is False: return {"error": "Ya se está iniciando"}
-    cmd, env = compose_cmd(name, "up", "-d", "--build")
     with LOG_LOCK:
         START_LOGS[name] = {"lines": [], "done": False, "ok": False}
+        buf = START_LOGS[name]  # v1.5 (C5): MI buffer — si el cerebro se borra y se recrea, este worker no toca el nuevo
+    try:
+        # v1.5.2: los puertos de ESTE cerebro no chocan con nada — antes de montar el compose
+        _ensure_ports(name, lambda s: _log_append(buf, s))
+    except Exception as e:
+        _log_append(buf, f"(no pude comprobar los puertos: {e})")
+    # v1.5 (U17): --progress=plain desoculta los pasos de build — SOLO si el compose lo admite
+    args = ["up", "-d", "--build"] + (["--progress=plain"] if _compose_progress_ok() else [])
+    cmd, env = compose_cmd(name, *args)
     def worker():
+        p = None
         try:
-            # ponytail: dict global + lock — un solo usuario local, sobra
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, errors="replace", env=env, creationflags=NO_WINDOW)
-            with LOG_LOCK:
-                for line in p.stdout:
-                    buf = START_LOGS.get(name)
-                    if buf is None: break
+            for line in p.stdout:
+                with LOG_LOCK:  # v1.5 (U17): lock POR LÍNEA — antes se retenía todo el arranque y /api/logs se quedaba colgado
+                    if START_LOGS.get(name) is not buf:
+                        if p.poll() is None: p.kill()  # mi cerebro fue borrado — el arranque huérfano muere
+                        break
                     buf["lines"] = (buf["lines"] + [line.rstrip()])[-200:]
-                rc = p.wait()
-                if name in START_LOGS:
-                    START_LOGS[name].update(done=True, ok=rc == 0)
+            rc = p.wait()
+            if rc == 0:
+                time.sleep(5)  # dejar que arranquen del todo antes de juzgar
+                _postcheck_recreate(name, lambda s: _log_append(buf, s))
+            with LOG_LOCK:
+                if START_LOGS.get(name) is buf:
+                    buf.update(done=True, ok=rc == 0)
         except Exception as e:
             with LOG_LOCK:
-                if name in START_LOGS:
-                    buf = START_LOGS[name]
+                if START_LOGS.get(name) is buf:
                     buf["lines"] = (buf["lines"] + [f"Error: {e}"])[-200:]
                     buf.update(done=True, ok=False)
     threading.Thread(target=worker, daemon=True).start()
@@ -919,18 +1139,36 @@ def instance_start(name):
 def instance_stop(name):
     if not (INSTANCES_DIR / name / ".env").exists(): return {"error": "No existe"}
     cmd, env = compose_cmd(name, "stop")
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, creationflags=NO_WINDOW)
+    # v1.5 (C2): parar 8 contenedores puede pasar de 60s — sin catch, TimeoutExpired rompía la conexión
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env, creationflags=NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        return {"error": "El cerebro es grande y está tardando en pararse — espera un momento y vuelve a intentarlo"}
     if r.returncode != 0: return {"error": r.stderr or r.stdout}
+    _list_invalidate()
     return {"success": True}
 
 
 def instance_remove(name):
     if not (INSTANCES_DIR / name / ".env").exists(): return {"error": "No existe"}
     cmd, env = compose_cmd(name, "down", "--rmi", "local")
-    subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, creationflags=NO_WINDOW)
+    down_err = ""
+    # v1.5 (C3): igual que stop — down pesado nunca rompe la conexión
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env, creationflags=NO_WINDOW)
+    except subprocess.TimeoutExpired:
+        down_err = "El cerebro es grande y ha tardado en apagarse — la carpeta ya está borrada; si sigue apareciendo en Docker, reintenta en un minuto"
+    # v1.5 (C5): cerrar el log de un arranque en curso — sin esto, borrar+recrear+iniciar
+    # dejaba el nombre bloqueado con "Ya se está iniciando" (worker fantasma)
+    with LOG_LOCK:
+        buf = START_LOGS.get(name)
+        if buf is not None and not buf.get("done"):
+            buf["lines"] = (buf["lines"] + ["Cerebro eliminado — arranque cancelado"])[-200:]
+            buf.update(done=True, ok=False)
     inst = INSTANCES_DIR / name
     if inst.exists(): shutil.rmtree(inst, ignore_errors=True)
-    return {"success": True}
+    _list_invalidate()
+    return {"error": down_err} if down_err else {"success": True}
 
 
 def _ram_gb():
@@ -1007,6 +1245,25 @@ def _probe(cmd, extra_paths=()):
     return False, "", cmd
 
 
+def start_docker():
+    """v1.5 (U4): botón 'Arrancar Docker' — Docker Desktop instalado pero parado.
+    El usuario no debe buscarlo en el menú Inicio: la página sigue sola al volver."""
+    if not IS_WIN:
+        return {"error": "En Linux, arranca el servicio de Docker desde una terminal"}
+    _refresh_path()
+    ok, _, _ = _probe("docker", _KNOWN["docker"])
+    if not ok:
+        return {"error": "Docker no está instalado — usa «Instalar dependencias» arriba"}
+    rc, _, _ = run(["docker", "info"], timeout=10)
+    if rc == 0:
+        return {"success": True, "ya": True}
+    dd = Path(r"C:\Program Files\Docker\Docker\Docker Desktop.exe")
+    if not dd.exists():
+        return {"error": "No encuentro Docker Desktop — ábrelo tú desde el menú Inicio"}
+    subprocess.Popen([str(dd)], creationflags=NO_WINDOW)
+    return {"success": True}
+
+
 def check_requirements():
     general, per = [], []
     _refresh_path()
@@ -1031,8 +1288,10 @@ def check_requirements():
     if docker_up:
         rc, out, _ = run(["docker", "images", "--format", "{{.Repository}}"], timeout=10)
         have = {"searxng/searxng", "ollama/ollama", "diegosouzapw/omniroute"} & set(out.split())
-        per.append({"name": "Imágenes base", "ok": len(have) == 3,
-                    "version": "ya descargadas" if len(have) == 3 else "se descargan (~3GB) en el primer inicio", "url": ""})
+        # v1.5 (U1): informativo, NO requisito — se descargan solas al primer arranque.
+        # Contarlas como "faltantes" daba un chip rojo en instalaciones perfectas.
+        per.append({"name": "Imágenes base", "ok": len(have) == 3, "info": True,
+                    "version": "ya descargadas" if len(have) == 3 else "se descargan solas (~3GB) al primer inicio", "url": ""})
     out = {"general": general, "por_cerebro": per, "project_ready": COMPOSE_FILE.exists(),
            "base": str(BASE_DIR), "is_win": IS_WIN,
            # v1.4: cerebro volcado a mano en la raíz (sin carpeta con su nombre) → ofrecer organizarlo
@@ -1066,6 +1325,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         global _LAST_REQ
         _LAST_REQ = time.time()
+        try:
+            self._do_GET()
+        except Exception as e:
+            # v1.5 (C-all): NINGÚN error rompe la conexión — siempre JSON legible
+            try: self._json({"error": f"Error inesperado: {e}"}, 500)
+            except Exception: pass
+
+    def _do_GET(self):
         if self.path == "/" or self.path == "/index.html":
             p = Path(sys._MEIPASS) / "index.html" if getattr(sys, "frozen", False) else Path(__file__).parent / "index.html"
             self._html(p.read_bytes()); return
@@ -1077,7 +1344,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/api/instances": self._json({"instances": list_instances()}); return
         if self.path.startswith("/api/logs/"):
             name = urllib.parse.unquote(self.path.split("/api/logs/")[1])
-            if not valid_name(name): self._json({"error": "Nombre inválido"}, 400); return
+            # v1.5 (C4): las tareas del gestor llevan prefijo task: — un cerebro llamado 'setup' tiene SU propio log
+            if not (valid_name(name) or name in ("task:setup", "task:deps", "task:move", "task:dockermove", "task:relocate")):
+                self._json({"error": "Nombre inválido"}, 400); return
             with LOG_LOCK:
                 buf = START_LOGS.get(name) or {"lines": [], "done": True, "ok": False}
             self._json({"lines": buf["lines"], "done": buf["done"], "ok": buf["ok"]}); return
@@ -1102,18 +1371,35 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         global _LAST_REQ
         _LAST_REQ = time.time()
+        try:
+            self._do_POST()
+        except Exception as e:
+            # v1.5 (C-all): NINGÚN error rompe la conexión — siempre JSON legible
+            try: self._json({"error": f"Error inesperado: {e}"}, 500)
+            except Exception: pass
+
+    def _do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length)) if length else {}
+        try:
+            body = json.loads(self.rfile.read(length)) if length else {}
+        except Exception:
+            self._json({"error": "Datos no válidos"}, 400); return
         if self.path == "/api/create":
             name = body.get("name", "").strip()
             if not name: self._json({"error": "nombre vacío"}, 400); return
+            if len(name) > 64:  # v1.5 (C1): rutas >260 chars rompían mkdir/bind mounts — y crash sin JSON
+                self._json({"error": "El nombre es demasiado largo — 64 caracteres como mucho"}, 400); return
             if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
                 self._json({"error": "Solo letras, números, guiones y guiones bajos"}, 400); return
+            if name.lower() == SYSTEM_SUBDIR.lower():  # v1.5: es la carpeta del sistema
+                self._json({"error": "Ese nombre está reservado para el sistema — elige otro"}, 400); return
             self._json(instance_create(name)); return
         if self.path == "/api/download-project":
             self._json(download_project(body.get("dest", ""))); return
         if self.path == "/api/install-deps":
             self._json(install_deps()); return
+        if self.path == "/api/start-docker":
+            self._json(start_docker()); return
         if self.path == "/api/set-base":
             self._json(set_base(body.get("path", ""))); return
         if self.path == "/api/move-docker-data":

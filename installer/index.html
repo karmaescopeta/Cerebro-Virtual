@@ -49,7 +49,7 @@ h1 { font-family: var(--font-display); font-size:28px; font-weight:700; } h2 { f
 .btn-secondary:hover { background: var(--color-surface-highest); }
 .btn-danger { background: var(--color-error-container); color: var(--color-error); border:1px solid var(--color-error); }
 .btn-danger:hover { opacity:0.85; }
-.btn:disabled { opacity:0.5; cursor:not-allowed; }
+.btn:disabled { opacity:0.5; filter:grayscale(75%); cursor:not-allowed; }  /* v1.5 (D): gris evidente — azul al 50% parecía pulsable */
 .btn .material-symbols-outlined { font-size:18px; }
 .input { width:100%; padding:10px 14px; background: var(--color-surface-container); border:1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); font-size:14px; outline:none; transition: var(--transition-fast); }
 .input:focus { border-color: var(--color-primary); }
@@ -105,14 +105,27 @@ th { font-family: var(--font-mono); }
 .brow-row:last-child { border-bottom:none; }
 .brow-row:hover { background: var(--color-surface-high); }
 .brow-row .material-symbols-outlined { font-size:18px; color: var(--color-primary); }
+/* v1.5: filas de Ajustes — icono en círculo tintado + textos + acción alineada */
+.set-row { display:flex; gap:16px; align-items:center; padding:16px 0; border-bottom:1px solid var(--color-border); }
+.set-row:last-child { border-bottom:none; padding-bottom:4px; }
+.set-ico { width:42px; height:42px; flex-shrink:0; border-radius:var(--radius-full); display:flex; align-items:center; justify-content:center; background:color-mix(in srgb, var(--color-primary) 12%, transparent); color: var(--color-primary); }
+.set-ico .material-symbols-outlined { font-size:21px; }
+.set-txt { flex:1; min-width:0; }
+.set-title { font-weight:600; font-size:14px; margin-bottom:3px; }
+.set-desc { font-size:12.5px; color:var(--color-text-tertiary); line-height:1.5; }
+.set-path { font-family:var(--font-mono); font-size:11.5px; color:var(--color-text-secondary); word-break:break-all; background:var(--color-surface-container); border:1px solid var(--color-border); border-radius:var(--radius-md); padding:6px 10px; margin-bottom:18px; }
 </style>
 </head>
 <body>
 <div id="app"></div>
 <script>
-function toast(msg, type='success') {
+function toast(msg, type='success', ms) {
+  // v1.5 (U8): un solo toast a la vez (el nuevo sustituye al viejo), errores 8s o hasta clic, announce a lectores
+  document.querySelectorAll('.toast').forEach(t => t.remove());
   const el = document.createElement('div'); el.className = `toast toast-${type}`; el.textContent = msg;
-  document.body.appendChild(el); setTimeout(() => el.remove(), 3000);
+  el.setAttribute('role', 'alert'); el.style.cursor = 'pointer';
+  el.onclick = () => el.remove();
+  document.body.appendChild(el); setTimeout(() => el.remove(), ms || (type === 'error' ? 8000 : 3000));
 }
 async function api(path, opts={}) {
   const t = opts.__timeout || 120000; delete opts.__timeout;  // __timeout: ms de espera (selector nativo necesita mucho)
@@ -128,13 +141,14 @@ function showLoading(text) {
 function hideLoading() { const el = document.getElementById('loading'); if (el) el.remove(); }
 
 const REQ_ICONS = {"Docker":"hub","Docker corriendo":"sync","Git":"terminal","Python":"science","RAM (8GB)":"memory","Espacio disco (5GB)":"save","Espacio (1GB)":"save","Imágenes base":"cloud_upload"};
-const reqCards = list => list.map(c => `<div class="req-item"><div class="req-top"><span class="material-symbols-outlined">${REQ_ICONS[c.name]||'info'}</span><span>${c.name}</span></div><div class="req-version">${c.version||(c.ok?'OK':'No encontrado')}</div><div class="req-foot">${c.ok?'<span class="badge badge-ok"><span class="material-symbols-outlined">check_circle</span>OK</span>':`<span class="badge badge-fail"><span class="material-symbols-outlined">warning</span>Faltante</span>${c.url?`<a class="req-link" href="${c.url}" target="_blank" rel="noreferrer"><span class="material-symbols-outlined">download</span>Descargar</a>`:''}`}</div></div>`).join('');
+const reqCards = list => list.map(c => `<div class="req-item"><div class="req-top"><span class="material-symbols-outlined">${REQ_ICONS[c.name]||'info'}</span><span>${c.name}</span></div><div class="req-version">${c.version||(c.ok?'OK':'No encontrado')}</div><div class="req-foot">${c.info?'<span class="badge badge-stopped"><span class="material-symbols-outlined">info</span>Se descargan solas</span>':(c.ok?'<span class="badge badge-ok"><span class="material-symbols-outlined">check_circle</span>OK</span>':`<span class="badge badge-fail"><span class="material-symbols-outlined">warning</span>Faltante</span>${c.url?`<a class="req-link" href="${c.url}" target="_blank" rel="noreferrer"><span class="material-symbols-outlined">download</span>Descargar</a>`:''}`)}</div></div>`).join('');
 async function render() {
   const req = await api('/api/requirements');
   const inst = await api('/api/instances');
   const general = req.general || [], porCerebro = req.por_cerebro || [];
-  const faltan = general.concat(porCerebro).filter(c => !c.ok).length;
+  const faltan = general.concat(porCerebro).filter(c => !c.ok && !c.info).length;
   const dockerOk = (general.find(c => c.name === 'Docker corriendo') || {}).ok;
+  const dockerInst = (general.find(c => c.name === 'Docker') || {}).ok;
   const nInst = general.filter(c => ['Docker','Git','Python'].includes(c.name) && !c.ok).length;
   const chip = dockerOk && faltan === 0 ? '<span class="badge badge-ok"><span class="material-symbols-outlined">check_circle</span>Todo listo</span>' : `<span class="badge badge-fail"><span class="material-symbols-outlined">warning</span>Faltan ${faltan}</span>`;
   const imBase = porCerebro.find(c => c.name === 'Imágenes base');
@@ -144,10 +158,24 @@ async function render() {
   const projReady = req.project_ready !== false;
   window.__projReady = projReady;
 
+  window.__ddHere = req.docker_data_here !== false;  // v1.5: ¿los datos de Docker ya viven junto al sistema?
+  // v1.5 (U4): el hueco del botón muestra SIEMPRE el siguiente paso — nunca un botón gris sin explicación
+  let nbBtn;
+  if (dockerOk && projReady) {
+    nbBtn = `<button class="btn btn-primary" onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>`;
+  } else if (!dockerOk && projReady && dockerInst) {
+    nbBtn = `<button class="btn btn-primary" onclick="startDockerBtn(this)"><span class="material-symbols-outlined">sync</span>Arrancar Docker</button>`;
+  } else if (!projReady) {
+    nbBtn = `<span class="subtitle" style="align-self:center;text-align:right;">Termina de instalar el sistema (arriba) para crear cerebros</span>`;
+  } else {
+    nbBtn = `<span class="subtitle" style="align-self:center;text-align:right;">Instala y arranca Docker (requisitos de abajo) para crear cerebros</span>`;
+  }
+  // v1.5: la tuerca — los ajustes del sistema viven aquí, no sueltos por la página
+  const gear = projReady ? `<button class="btn btn-secondary btn-icon" aria-label="Ajustes" title="Ajustes" style="margin-left:10px;" onclick="showSettings()"><span class="material-symbols-outlined">settings</span></button>` : '';
   document.getElementById('app').innerHTML = `
     <div class="header">
       <h1>Cerebro Virtual</h1>
-      <button class="btn btn-primary" ${dockerOk && projReady ? '' : `disabled title="${dockerOk ? 'Descarga el proyecto primero' : 'Arranca Docker primero'}"`} onclick="showCreateModal()"><span class="material-symbols-outlined">add</span> Nuevo cerebro</button>
+      ${nbBtn}${gear}
     </div>
     ${req.gestor_update ? `<div class="card" style="padding:16px 24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-color:var(--color-primary);">
       <span class="material-symbols-outlined" style="color:var(--color-primary);">update</span>
@@ -156,24 +184,24 @@ async function render() {
     </div>` : ''}
     ${!projReady ? `<div class="card" style="border-color:var(--color-primary);">
       <h2>Instalar Cerebro Virtual</h2>
-      <p class="subtitle" style="margin-bottom:16px;">Haz clic, elige la carpeta destino (puede ser otro disco duro) y el proyecto queda instalado ahí en ~un minuto. Sistema, cerebros y vaults vivirán juntos en esa carpeta.</p>
-      <button class="btn btn-primary" onclick="showLocationModal()"><span class="material-symbols-outlined">download</span>Descargar Cerebro Virtual</button>
+      <p class="subtitle" style="margin-bottom:16px;">Haz clic, elige la carpeta destino (puede ser otro disco duro) y el sistema queda instalado ahí en ~un minuto. Sistema, cerebros y vaults vivirán juntos en esa carpeta.</p>
+      <button class="btn btn-primary" onclick="showLocationModal('instalar')"><span class="material-symbols-outlined">download</span>Instalar Cerebro Virtual</button>
     </div>` : ''}
     <div class="card">
-      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Requisitos ${chip}${nInst ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="installDeps()"><span class="material-symbols-outlined">download</span>Instalar dependencias</button>' : ''}${projReady && req.is_win && req.docker_data_here === false ? '<button class="btn btn-secondary btn-sm" onclick="confirmDockerMove()"><span class="material-symbols-outlined">save</span>Mover datos de Docker aquí</button>' : ''}</h2>
+      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Requisitos ${chip}${nInst ? '<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="installDeps()"><span class="material-symbols-outlined">download</span>Instalar dependencias</button>' : ''}</h2>
       ${dockerOk ? '' : '<p class="subtitle" style="margin-bottom:14px;">Arranca Docker Desktop y espera a que la ballena esté verde — la página se refresca sola cada 5 segundos.</p>'}
       <div class="req-grid">${reqCards(general)}</div>
       <p class="label-caps" style="margin:20px 0 12px;">Por cerebro</p>
       <div class="req-grid">${reqCards(porCerebro)}</div>
     </div>
     <div class="card">
-      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span><button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="showLocationModal()">Abrir carpeta existente</button><span class="icon-info" title="¿Para qué sirve?" onclick="showInfo('open')"><span class="material-symbols-outlined">info</span></span><button class="btn btn-secondary btn-sm" onclick="confirmRelocate()"><span class="material-symbols-outlined">save</span>Mover todo a otra carpeta</button><span class="icon-info" title="¿Para qué sirve?" onclick="showInfo('move')"><span class="material-symbols-outlined">info</span></span>` : ''}</h2>
-      ${(inst.instances||[]).length ? `<table><thead><tr><th>Nombre</th><th>Frontend</th><th>Backend</th><th>Agente</th><th>Estado</th><th>Recursos</th><th>Acciones</th></tr></thead><tbody>
-        ${(inst.instances||[]).map(i => `<tr><td style="font-weight:600;color:var(--color-primary);">${i.name}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.FRONTEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.BACKEND_PORT||'-'}</td><td style="font-family:var(--font-mono);font-size:13px;">${i.ports.AGENT_PORT||'-'}</td><td><span class="badge badge-${i.status==='running'?'running':'stopped'}">${i.status==='running'?'Activo':'Parado'}</span></td><td class="mono-cell">${[i.stats, i.size_gb].filter(Boolean).join(' · ')||'—'}</td><td class="actions-cell">${i.status==='running'?`<button class="btn btn-primary btn-sm" onclick="openInst('${i.name}', ${i.ports.FRONTEND_PORT||5173})"><span class="material-symbols-outlined">public</span>Abrir</button><button class="btn btn-secondary btn-sm" onclick="stopInst('${i.name}')">Parar</button>`:`<button class="btn btn-primary btn-sm" ${dockerOk?'':'disabled title="Arranca Docker primero"'} onclick="startInst('${i.name}')"><span class="material-symbols-outlined">electric_bolt</span>Iniciar</button>`}<button class="btn btn-secondary btn-sm btn-icon" title="Descargar vault" onclick="downloadInst('${i.name}')"><span class="material-symbols-outlined">download</span></button><button class="btn btn-sm btn-icon btn-icon-danger" title="Borrar" onclick="removeInst('${i.name}')"><span class="material-symbols-outlined">delete</span></button></td></tr>`).join('')}
+      <h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">Tus cerebros (${(inst.instances||[]).length}) ${projReady ? `<span class="req-version" style="font-weight:400;">— sistema en ${req.base}</span>` : ''}</h2>
+      ${(inst.instances||[]).length ? `<table><thead><tr><th>Nombre</th><th>Estado</th><th>Recursos</th><th>Acciones</th></tr></thead><tbody>
+        ${(inst.instances||[]).map(i => { const sizeVis = parseFloat(i.size_gb) > 0.1 ? i.size_gb : ''; const starting = startingSet.has(i.name); return `<tr><td style="font-weight:600;color:var(--color-primary);">${i.name}</td><td><span class="badge badge-${i.status==='running'?'running':'stopped'}">${i.status==='running'?'Activo':'Parado'}</span></td><td class="mono-cell">${[i.stats, sizeVis].filter(Boolean).join(' · ')||'—'}</td><td class="actions-cell">${starting ? `<button class="btn btn-primary btn-sm" disabled title="Arrancando…"><span class="material-symbols-outlined">sync</span>Arrancando…</button>` : i.status==='running' ? `<button class="btn btn-primary btn-sm" title="localhost:${i.ports.FRONTEND_PORT||5173}" onclick="openInst('${i.name}', ${i.ports.FRONTEND_PORT||5173})"><span class="material-symbols-outlined">public</span>Abrir</button><button class="btn btn-secondary btn-sm" onclick="stopInst('${i.name}')">Parar</button>` : `<button class="btn btn-primary btn-sm" ${dockerOk?'':'disabled title="Arranca Docker primero"'} onclick="startInst('${i.name}')"><span class="material-symbols-outlined">electric_bolt</span>Iniciar</button>`}<button class="btn btn-secondary btn-sm btn-icon" title="Descargar vault" onclick="downloadInst('${i.name}')"><span class="material-symbols-outlined">download</span></button><button class="btn btn-sm btn-icon btn-icon-danger" title="Borrar" onclick="removeInst('${i.name}','${i.status}')"><span class="material-symbols-outlined">delete</span></button></td></tr>`; }).join('')}
       </tbody></table>` : `<div class="empty-state"><span class="material-symbols-outlined">psychology</span><p>Aún no hay cerebros.</p><p style="margin-top:8px;font-size:13px;">Crea tu primer Cerebro con el botón de arriba.</p></div>`}
     </div>
   `;
-  if (!projReady && !locAsked && !document.querySelector('.modal-overlay')) { locAsked = true; showLocationModal(); }
+  if (!projReady && !locAsked && !document.querySelector('.modal-overlay')) { locAsked = true; askNewOrExisting(); }
   if (projReady) maybeScan();
   if (projReady && req.sueltos && !tidyAsked && !document.querySelector('.modal-overlay')) {
     tidyAsked = true;
@@ -190,26 +218,37 @@ async function render() {
 }
 
 function showCreateModal() {
+  // v1.5 (U3): validación EN VIVO — motivo bajo el input, Crear deshabilitado hasta que sea válido
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>Crear nuevo cerebro</h2><p class="subtitle" style="margin-bottom:20px;">Elige un nombre. Solo letras, números, guiones y guiones bajos.</p><input class="input" id="new-name" placeholder="ej: cerebro2" pattern="[A-Za-z0-9_-]+" autofocus><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="create-btn">Crear</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>Crear nuevo cerebro</h2><p class="subtitle" style="margin-bottom:12px;">Elige un nombre: solo letras, números, guiones y guiones bajos (64 como mucho).</p><input class="input" id="new-name" placeholder="ej: cerebro2" autofocus><div id="name-err" style="min-height:20px;font-size:12px;color:var(--color-error);margin-top:6px;"></div><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="create-btn" disabled>Crear</button></div></div>`;
   document.body.appendChild(m);
-  m.querySelector('#create-btn').onclick = async () => {
-    const name = m.querySelector('#new-name').value.trim();
-    if (!name) { toast('Nombre vacío', 'error'); return; }
-    if (!/^[A-Za-z0-9_-]+$/.test(name)) { toast('Solo letras, números, guiones y guiones bajos', 'error'); return; }
+  const inp = m.querySelector('#new-name'), btn = m.querySelector('#create-btn'), err = m.querySelector('#name-err');
+  const validate = () => {
+    const name = inp.value.trim(); let e = '';
+    if (name.length > 64) e = 'Demasiado largo — 64 caracteres como mucho';
+    else if (name && !/^[A-Za-z0-9_-]+$/.test(name)) e = 'Sin espacios ni acentos — solo letras, números y guiones';
+    err.textContent = e;
+    btn.disabled = !name || !!e;
+  };
+  inp.oninput = validate;
+  inp.onkeydown = e => { if (e.key === 'Enter' && !btn.disabled) btn.click(); };
+  btn.onclick = async () => {
+    const name = inp.value.trim();
     m.remove(); showLoading('Creando instancia...');
     const d = await api('/api/create', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})});
     hideLoading();
-    if (d.error) { toast(d.error, 'error'); return; }
+    // v1.5 (U12): el "Ya existe" explica QUÉ hacer
+    if (d.error) { toast(d.error === 'Ya existe' ? `Ya existe una carpeta llamada "${name}" — si es tuya, dale otro nombre o bórrala primero` : d.error, 'error'); return; }
     toast(`${name} creado`); render();
   };
-  m.querySelector('#new-name').onkeydown = e => { if (e.key==='Enter') m.querySelector('#create-btn').click(); };
 }
 
 let logActive = false;
+const startingSet = new Set();  // v1.5 (U11): filas con Iniciar pulsado — sin doble POST posible
 async function startInst(n) {
+  startingSet.add(n); render();
   const d = await api(`/api/start/${encodeURIComponent(n)}`, {method:'POST'});
-  if (d.error) { toast(d.error, 'error'); return; }
+  if (d.error) { startingSet.delete(n); toast(d.error, 'error'); render(); return; }
   showLog(n);
 }
 let locAsked = false, scanDone = false, tidyAsked = false, dockerMoveRoot = null, pickPath = "";
@@ -223,12 +262,30 @@ async function browseGo(path) {
   return pickPath;
 }
 async function newFolder() {
+  // v1.5 (U9): input inline con validación de caracteres Windows — nada de prompt() nativo
   if (!pickPath) { toast('Entra primero en un disco', 'error'); return; }
-  const n = prompt('Nombre de la carpeta nueva:');
-  if (!n) return;
-  const r = await api('/api/mkdir', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path: pickPath + (pickPath.endsWith('\\') ? '' : '\\') + n})});
-  if (r.error) { toast(r.error, 'error'); return; }
-  browseGo(pickPath); toast(`Carpeta "${n}" creada`);
+  document.getElementById('nf-bar')?.remove();
+  const browser = document.getElementById('browser');
+  const wrap = document.createElement('div'); wrap.id = 'nf-bar'; wrap.style.cssText = 'display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;';
+  wrap.innerHTML = `<input class="input" id="nf-name" placeholder="Nombre de la carpeta nueva" style="padding:6px 10px;font-size:13px;flex:1;min-width:180px;"><button class="btn btn-primary btn-sm" id="nf-go" disabled>Crear</button><span id="nf-err" style="font-size:12px;color:var(--color-error);"></span>`;
+  browser.parentElement.insertBefore(wrap, browser.nextSibling);
+  const inp = wrap.querySelector('#nf-name'), go = wrap.querySelector('#nf-go'), err = wrap.querySelector('#nf-err');
+  const validate = () => {
+    const v = inp.value.trim();
+    const bad = /[<>:"/\\|?*]/.test(v);
+    err.textContent = v && bad ? 'No puede llevar <>:"/\\|?*' : '';
+    go.disabled = !v || bad;
+  };
+  inp.oninput = validate;
+  inp.onkeydown = e => { if (e.key === 'Enter' && !go.disabled) go.click(); };
+  go.onclick = async () => {
+    const n = inp.value.trim();
+    wrap.remove();
+    const r = await api('/api/mkdir', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path: pickPath + (pickPath.endsWith('\\') ? '' : '\\') + n})});
+    if (r.error) { toast(r.error, 'error'); return; }
+    browseGo(pickPath); toast(`Carpeta "${n}" creada`);
+  };
+  inp.focus();
 }
 async function pickNativeFolder() {
   const d = await api('/api/pick-folder', {method:'POST', __timeout: 900000});
@@ -237,27 +294,39 @@ async function pickNativeFolder() {
   browseGo(d.path);
   return d.path;
 }
-function showLocationModal() {
+// v1.5 (U6): primera pregunta — separa "instalar por primera vez" de "ya lo tengo"
+function askNewOrExisting() {
+  const m = document.createElement('div'); m.className = 'modal-overlay';
+  m.innerHTML = `<div class="modal" style="max-width:560px;"><h2>¿Ya tienes Cerebro Virtual instalado en este ordenador?</h2><p class="subtitle" style="margin-bottom:20px;">Si lo instalaste antes (aquí, o moviste su carpeta), señalo dónde vive y tus cerebros aparecen al momento — sin copiar ni descargar nada.<br><br>Si no, lo instalo ahora en ~un minuto.</p><div class="modal-actions" style="flex-wrap:wrap;"><button class="btn btn-secondary" id="ane-no">No — instalarlo ahora</button><button class="btn btn-primary" id="ane-yes">Sí — está en este ordenador</button></div></div>`;
+  document.body.appendChild(m);
+  m.querySelector('#ane-no').onclick = () => { m.remove(); showLocationModal('instalar'); };
+  m.querySelector('#ane-yes').onclick = () => { m.remove(); showLocationModal('buscar'); };
+}
+function showLocationModal(mode) {
+  mode = mode || 'buscar';
   const m = document.createElement('div'); m.className = 'modal-overlay';
   const isWin = window.__isWin;
-  m.innerHTML = `<div class="modal" style="max-width:560px;"><h2>¿Dónde guardo tus cerebros?</h2><p class="subtitle" style="margin-bottom:14px;">Elige con el explorador de Windows la carpeta donde guardar todo: se creará dentro una carpeta llamada <span style="font-family:var(--font-mono);">gestor_de_cerebros</span> con una carpeta por cerebro.</p><div style="margin-bottom:8px;"><button class="btn btn-primary" id="pick-btn"><span class="material-symbols-outlined">folder_open</span>Abrir explorador de Windows</button></div><div id="browser"></div><div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="newFolder()"><span class="material-symbols-outlined">add</span>Nueva carpeta</button></div>${isWin ? '<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px;color:var(--color-text-secondary);"><input type="checkbox" id="dd-move"> Mover aquí también todo lo que descarga Docker — <b>libera espacio en el disco de Windows</b> (si tienes muchos GB, puede tardar un buen rato)</label>' : ''}<p class="subtitle" style="margin-top:12px;">¿Ya lo tenías instalado? Entra en su carpeta (abajo) y pulsa "Ya lo tengo instalado aquí" para recuperar tus cerebros.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button><button class="btn btn-secondary" id="sb-btn">Ya lo tengo instalado aquí</button>${window.__projReady ? '' : '<button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar en esta carpeta</button>'}</div></div>`;
+  const install = mode === 'instalar';
+  m.innerHTML = `<div class="modal" style="max-width:560px;"><h2>${install ? '¿Dónde guardo tus cerebros?' : '¿Dónde está instalado tu sistema?'}</h2><p class="subtitle" style="margin-bottom:14px;">${install ? 'Elige con el explorador la carpeta donde guardar todo: se creará dentro una carpeta llamada <span style="font-family:var(--font-mono);">gestor_de_cerebros</span> con una carpeta por cerebro.' : 'Navega hasta la carpeta de tu sistema (la que contiene <span style="font-family:var(--font-mono);">gestor_de_cerebros</span>, o esa misma) y confirma. No copio ni muevo nada.'}</p><div style="margin-bottom:8px;"><button class="btn btn-primary" id="pick-btn"><span class="material-symbols-outlined">folder_open</span>Abrir explorador de Windows</button></div><div id="browser"></div><div style="display:flex;gap:8px;margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="newFolder()"><span class="material-symbols-outlined">add</span>Nueva carpeta</button></div>${isWin && install ? '<label style="display:flex;gap:8px;align-items:flex-start;margin-top:14px;font-size:13px;color:var(--color-text-secondary);cursor:pointer;"><input type="checkbox" id="dd-move" style="margin-top:2px;"> <span>Instalar aquí también todo lo que Docker descarga — <b>libera espacio en el disco de Windows (C:)</b>. Son varios GB y puede tardar un rato, pero solo la primera vez.</span></label>' : ''}<div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Ahora no</button>${install && !window.__projReady ? '<button class="btn btn-secondary" id="sb-btn">Ya lo tengo instalado aquí</button><button class="btn btn-primary" id="dl-btn"><span class="material-symbols-outlined">download</span>Instalar en esta carpeta</button>' : '<button class="btn btn-primary" id="sb-btn">Usar esta carpeta</button>'}</div></div>`;
   document.body.appendChild(m);
   m.querySelector('#pick-btn').onclick = () => pickNativeFolder();
   browseGo("");
-  if (!window.__projReady) m.querySelector('#dl-btn').onclick = async () => {
+  m.querySelector('#sb-btn').onclick = async () => {
+    if (!pickPath) { toast(install ? 'Entra en la carpeta donde lo tienes instalado' : 'Entra en una carpeta primero', 'error'); return; }
+    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:pickPath})});
+    if (d.error) { toast(d.error, 'error'); return; }
+    // v1.5.1: decir DÓNDE quedó asignado el sistema — el toast con la ruta resuelta
+    m.remove(); toast(`Listo — tu sistema vive ahora en:\n${d.base} (${d.instances} cerebros encontrados)`, 'success', 7000); render(); maybeScan();
+  };
+  const dl = m.querySelector('#dl-btn');
+  if (dl) dl.onclick = async () => {
     if (!pickPath) { toast('Entra en una carpeta primero', 'error'); return; }
     const dest = pickPath;
     if (isWin && m.querySelector('#dd-move') && m.querySelector('#dd-move').checked) dockerMoveRoot = dest;
     m.remove();
     const d = await api('/api/download-project', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest})});
     if (d.error) { toast(d.error, 'error'); return; }
-    showLog('setup');
-  };
-  m.querySelector('#sb-btn').onclick = async () => {
-    if (!pickPath) { toast('Entra en la carpeta donde lo tienes instalado', 'error'); return; }
-    const d = await api('/api/set-base', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path:pickPath})});
-    if (d.error) { toast(d.error, 'error'); return; }
-    m.remove(); toast(`Encontrado — tienes ${d.instances} cerebro(s)`); render(); maybeScan();
+    showLog('task:setup');
   };
 }
 async function maybeScan() {
@@ -268,40 +337,40 @@ async function maybeScan() {
   if (!grupos.length) return;
   const total = grupos.reduce((n, g) => n + g.cerebros.length, 0);
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>He encontrado ${total} cerebro(s) en otras carpetas</h2><p class="subtitle" style="margin-bottom:16px;">Están instalados en otro sitio del equipo:<br>${grupos.map(g => `<span style="font-family:var(--font-mono);font-size:12px;">${g.base}</span> → ${g.cerebros.map(c => `<b>${c.name}</b>${c.encendido ? ' (se apagará un momento)' : ''}`).join(', ')}`).join('<br>')}<br><br>¿Los muevo todos a tu carpeta central? Así lo tendrás todo junto.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Dejarlos donde están</button><button class="btn btn-primary" id="mv-btn">Moverlos aquí</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>He encontrado ${total} cerebro(s) en otras carpetas</h2><p class="subtitle" style="margin-bottom:16px;">Están instalados en otro sitio del equipo:<br>${grupos.map(g => `<span style="font-family:var(--font-mono);font-size:12px;">${g.base}</span> → ${g.cerebros.map(c => `<b>${c.name}</b>${c.encendido ? ' (se apagará un momento)' : ''}`).join(', ')}`).join('<br>')}<br><br>¿Los muevo todos a tu carpeta central?<br><span style="font-family:var(--font-mono);font-size:12px;">${window.__base || ''}</span><br>Así lo tendrás todo junto.</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Dejarlos donde están</button><button class="btn btn-primary" id="mv-btn">Moverlos aquí</button></div></div>`;
   document.body.appendChild(m);
   m.querySelector('#mv-btn').onclick = async () => {
     m.remove();
     const items = grupos.flatMap(g => g.cerebros.map(c => ({base: g.base, name: c.name})));
     const r = await api('/api/move-cerebros', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({items})});
     if (r.error) { toast(r.error, 'error'); return; }
-    showLog('move');
+    showLog('task:move');
   };
 }
 async function startDockerMove(root) {
   const d = await api('/api/move-docker-data', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest:root})});
   if (d.error) { toast(d.error, 'error'); return; }
-  showLog('dockermove');
+  showLog('task:dockermove');
 }
-function showInfo(which) {
-  const texts = {
-    open: ['¿Para qué sirve "Abrir carpeta existente"?',
-      'Se usa cuando el gestor NO encuentra tu sistema: por ejemplo, si acabas de abrir el gestor en otro sitio, en otro ordenador, o alguien movió la carpeta a mano.',
-      'Al pulsarlo eliges la carpeta donde ya está instalado, y el gestor recupera al momento todos tus cerebros. No copia ni mueve nada: solo le dice al gestor dónde vive lo que ya tienes.',
-      'Si lo que quieres es LLEVAR tu sistema a una carpeta nueva, no uses este botón: usa "Mover todo a otra carpeta".'],
-    move: ['¿Para qué sirve "Mover todo a otra carpeta"?',
-      'Traslada físicamente TODO tu sistema —el programa y cada cerebro con todos sus archivos— a la carpeta que elijas. Vale para el mismo disco o para otro (por ejemplo, para pasar de C: a D:).',
-      'La carpeta que elijas pasará a ser la carpeta del sistema. Los cerebros encendidos se apagan un momento durante el traslado y se vuelven a encender solos al terminar. Si el gestor está dentro de la carpeta que se muda, se queda en su sitio y sigue funcionando igual.',
-      'Si solo quieres señalar dónde está ya instalado (sin mover nada), usa "Abrir carpeta existente".']
-  };
-  const [title, ...ps] = texts[which];
+// v1.5: Ajustes (la tuerca) — todo lo del sistema vive aquí, con su explicación al lado
+function showSettings() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>${title}</h2>${ps.map(p => `<p class="subtitle" style="margin-bottom:12px;">${p}</p>`).join('')}<div class="modal-actions"><button class="btn btn-primary" onclick="this.closest('.modal-overlay').remove()">Entendido</button></div></div>`;
+  const dockerRow = window.__isWin === false ? '' :
+    window.__ddHere
+      ? `<div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">save</span></div><div class="set-txt"><div class="set-title">Espacio del disco de Windows</div><div class="set-desc">Lo que Docker descarga ya vive junto a tus cerebros — el disco de Windows no acumula su peso.</div></div><span class="badge badge-ok"><span class="material-symbols-outlined">check_circle</span>Ya está</span></div>`
+      : `<div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">save</span></div><div class="set-txt"><div class="set-title">Liberar espacio del disco de Windows (C:)</div><div class="set-desc">Docker guarda todo lo que descarga —los moldes de tus cerebros, pueden ser muchos GB— en un archivo enorme dentro del disco de Windows. Este ajuste lo muda a la carpeta de tus cerebros: Docker se apaga un rato (tus cerebros se paran) y al terminar todo sigue igual. Con muchos GB tarda un buen rato.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="confirmDockerMove()">Liberar espacio</button></div>`;
+  m.innerHTML = `<div class="modal" style="max-width:640px;">
+    <h2 style="display:flex;align-items:center;gap:10px;"><span class="material-symbols-outlined" style="color:var(--color-primary);font-size:22px;">settings</span>Ajustes</h2>
+    <div class="set-path">Tu sistema vive en: ${window.__base || ''}</div>
+    <div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">save</span></div><div class="set-txt"><div class="set-title">Cambiar de carpeta o disco</div><div class="set-desc">Muda el sistema completo —todos tus cerebros con todos sus archivos— a otra carpeta o disco (por ejemplo, de C: a D:). Los cerebros encendidos se apagan un momento y se encienden solos al terminar.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="this.closest('.modal-overlay').remove();confirmRelocate()">Mover todo</button></div>
+    <div class="set-row"><div class="set-ico"><span class="material-symbols-outlined">folder_open</span></div><div class="set-txt"><div class="set-title">Usar un sistema ya instalado</div><div class="set-desc">Si tu sistema está en otra carpeta (o lo moviste a mano): señalo su carpeta y tus cerebros aparecen al momento. No copia ni mueve nada.</div></div><button class="btn btn-secondary" style="flex-shrink:0;" onclick="this.closest('.modal-overlay').remove();showLocationModal('buscar')">Señalar carpeta</button></div>
+    ${dockerRow}
+  </div>`;
   document.body.appendChild(m);
 }
 function confirmDockerMove() {
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>Mover los datos de Docker</h2><p class="subtitle" style="margin-bottom:16px;">Docker Desktop se apagará (tus cerebros se paran) y su disco de imágenes/contenedores se moverá a la carpeta del sistema. Con muchos GB puede tardar bastante. ¿Seguro?</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="ddgo">Mover</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>Liberar espacio del disco de Windows</h2><p class="subtitle" style="margin-bottom:16px;">Docker guarda sus descargas (los moldes de tus cerebros) en un archivo muy pesado dentro del disco de Windows. Lo mudo a la carpeta de tus cerebros.<br><br>Docker se apagará un rato —tus cerebros se paran— y con muchos GB puede tardar. Al terminar, todo sigue funcionando igual. ¿Seguro?</p><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-primary" id="ddgo">Liberar espacio</button></div></div>`;
   document.body.appendChild(m);
   m.querySelector('#ddgo').onclick = () => { m.remove(); startDockerMove(''); };
 }
@@ -315,38 +384,85 @@ async function confirmRelocate() {
     if (!dest) return;
     const r = await api('/api/relocate', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({dest}), __timeout: 900000});
     if (r.error) { toast(r.error, 'error'); return; }
-    showLog('relocate');
+    showLog('task:relocate');
   };
+}
+async function startDockerBtn(btn) {
+  btn.disabled = true;
+  const d = await api('/api/start-docker', {method:'POST'});
+  if (d.error) { toast(d.error, 'error'); btn.disabled = false; return; }
+  if (d.ya) { toast('Docker ya estaba corriendo'); render(); return; }
+  btn.innerHTML = '<span class="material-symbols-outlined">sync</span>Arrancando Docker…';
+  toast('Arrancando Docker — cuando la ballena esté verde, esta página sigue sola');
 }
 async function installDeps() {
   const d = await api('/api/install-deps', {method:'POST'});
   if (d.error) { toast(d.error, 'error'); return; }
-  showLog('deps');
+  showLog('task:deps');
 }
+const LOG_TITLES = {'task:setup':'Instalando Cerebro Virtual','task:deps':'Instalando dependencias','task:dockermove':'Liberando espacio del disco de Windows','task:move':'Moviendo tus cerebros','task:relocate':'Mudando todo el sistema'};
+// v1.5 (U10/U17): panel de progreso con reloj SIEMPRE vivo + última línea visible.
+// Vive en <body> (fuera de #app) — render() no lo destruye; al acabar queda con ✓ y botón Abrir.
 function showLog(n) {
   logActive = true;
-  let box = document.getElementById('logbox');
-  if (!box) {
-    box = document.createElement('div'); box.className = 'card'; box.id = 'logbox';
-    document.getElementById('app').appendChild(box);
-  }
-  box.innerHTML = `<h2>${n === 'setup' ? 'Descargando Cerebro Virtual' : n === 'deps' ? 'Instalando dependencias' : n === 'dockermove' ? 'Moviendo los datos de Docker' : n === 'move' ? 'Moviendo tus cerebros' : n === 'relocate' ? 'Mudando todo el sistema' : 'Iniciando ' + n}</h2>${n !== 'setup' && window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div class="log-panel" id="loglines"></div>`;
+  document.getElementById('logbox')?.remove();
+  const box = document.createElement('div'); box.className = 'card'; box.id = 'logbox';
+  document.body.appendChild(box);
+  box.innerHTML = `<h2 style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">${LOG_TITLES[n] || 'Iniciando ' + n}<span class="req-version" style="font-weight:400;" id="logclock">0:00</span><span class="icon-info" style="margin-left:auto;cursor:pointer;" title="Cerrar panel" onclick="this.closest('.card').remove()"><span class="material-symbols-outlined">close</span></span></h2>${n !== 'task:setup' && window.__imgBaseOk === false ? '<p class="subtitle" style="margin-bottom:12px;">Primera vez: se descargan las imágenes (~3GB) y puede tardar varios minutos. No cierres esta página.</p>' : ''}<div id="loglast" style="margin:0 0 6px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">Empezando…</div><div class="log-panel" id="loglines"></div><div id="logfoot"></div>`;
+  const t0 = Date.now();
+  const clock = setInterval(() => {
+    const c = document.getElementById('logclock');
+    if (!c) { clearInterval(clock); return; }
+    const s = Math.floor((Date.now() - t0) / 1000);
+    c.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')} transcurridos`;
+  }, 1000);
+  const finish = async (d) => {
+    clearInterval(clock);
+    logActive = false;
+    const foot = document.getElementById('logfoot');
+    if (foot) {
+      const badge = `<span class="badge ${d.ok ? 'badge-ok' : 'badge-fail'}"><span class="material-symbols-outlined">${d.ok ? 'check_circle' : 'warning'}</span>${d.ok ? 'Terminado' : 'Error'}</span>`;
+      let extra = '';
+      if (d.ok && !LOG_TITLES[n]) {  // arranque de cerebro → botón Abrir directo
+        try {
+          const inst = await api('/api/instances');
+          const it = (inst.instances || []).find(i => i.name === n);
+          const port = it && it.ports.FRONTEND_PORT;
+          if (port) extra = `<button class="btn btn-primary btn-sm" onclick="window.open('http://localhost:${port}')"><span class="material-symbols-outlined">public</span>Abrir</button>`;
+        } catch (e) {}
+      }
+      foot.innerHTML = `<div style="display:flex;align-items:center;gap:12px;margin-top:12px;flex-wrap:wrap;">${badge}${extra}<button class="btn btn-secondary btn-sm" style="margin-left:auto;" onclick="this.closest('.card').remove()">Cerrar</button></div>`;
+    }
+    startingSet.delete(n);
+  };
   const poll = async () => {
     const d = await api(`/api/logs/${encodeURIComponent(n)}`);
     const el = document.getElementById('loglines');
-    if (!el) { logActive = false; return; }
-    el.textContent = (d.lines || []).join('\n');
+    if (!el) { logActive = false; clearInterval(clock); return; }
+    const trad = (d.lines || []).map(l => l
+      .replace(/^(\S*)\s*Pulling fs layer.*$/, '$1 descargando pieza…')
+      .replace(/^(\S*)\s*Downloading\s+(\S+)$/, 'Descargando $2')
+      .replace(/^(\S*)\s*Download complete.*$/, '$1 descarga completa')
+      .replace(/^(\S*)\s*Pull complete.*$/, '$1 lista'));
+    // v1.5 (M4): URLs clicables en el log — escapando todo lo que venga de docker/winget antes
+    const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    el.innerHTML = trad.map(l => esc(l).replace(/(https?:\/\/\S+)/g, '<a href="$1" target="_blank" rel="noreferrer" style="color:var(--color-primary);text-decoration:underline;">$1</a>')).join('\n');
     el.scrollTop = el.scrollHeight;
+    const last = document.getElementById('loglast');
+    if (last && (d.lines || []).length) last.textContent = (d.lines || []).slice(-1)[0];
     if (d.done) {
-      logActive = false;
-      if (n === 'setup') {
-        toast(d.ok ? 'Proyecto descargado — ya puedes crear cerebros' : 'Error al descargar el proyecto', d.ok ? 'success' : 'error');
+      await finish(d);
+      if (n === 'task:setup') {
+        toast(d.ok ? 'Sistema instalado — ya puedes crear cerebros' : 'Error al instalar el sistema', d.ok ? 'success' : 'error');
         if (d.ok && dockerMoveRoot) { const root = dockerMoveRoot; dockerMoveRoot = null; startDockerMove(root); return; }
       }
-      else if (n === 'deps') toast(d.ok ? 'Dependencias listas' : 'Algunas dependencias fallaron — mira el log', d.ok ? 'success' : 'error');
-      else if (n === 'dockermove') toast(d.ok ? 'Datos de Docker movidos' : 'Error moviendo los datos de Docker — mira el log', d.ok ? 'success' : 'error');
-      else if (n === 'move') toast(d.ok ? 'Cerebros movidos a tu carpeta central' : 'Error moviendo cerebros — mira el log', d.ok ? 'success' : 'error');
-      else if (n === 'relocate') toast(d.ok ? 'Sistema mudado a su nueva carpeta' : 'Error mudando el sistema — mira el log', d.ok ? 'success' : 'error');
+      else if (n === 'task:deps') toast(d.ok ? 'Dependencias listas' : 'Algunas dependencias fallaron — mira el log', d.ok ? 'success' : 'error');
+      else if (n === 'task:dockermove') toast(d.ok ? 'Espacio liberado — lo que Docker descarga ahora vive con tus cerebros' : 'Error liberando espacio — mira el log', d.ok ? 'success' : 'error');
+      else if (n === 'task:move' || n === 'task:relocate') {
+        // v1.5.1: decir DÓNDE quedó todo — ruta fresca tras la mudanza
+        if (d.ok) { try { const rr = await api('/api/requirements'); toast((n === 'task:move' ? 'Tus cerebros ahora viven en:\n' : 'Tu sistema ahora vive en:\n') + rr.base, 'success', 7000); } catch (e) { toast('Mudanza completada'); } }
+        else toast('Error mudando — mira el log', 'error');
+      }
       else d.ok ? toast(`${n} iniciado`) : toast(`Error al iniciar ${n}`, 'error');
       render();
       return;
@@ -355,18 +471,28 @@ function showLog(n) {
   };
   poll();
 }
-async function stopInst(n) { showLoading(`Parando ${n}...`); const d = await api(`/api/stop/${encodeURIComponent(n)}`,{method:'POST'}); hideLoading(); d.error ? toast(d.error,'error') : (toast(`${n} parado`), render()); }
+async function stopInst(n) { showLoading(`Parando ${n} (los cerebros grandes tardan un poco)...`); const d = await api(`/api/stop/${encodeURIComponent(n)}`,{method:'POST', __timeout: 330000}); hideLoading(); d.error ? toast(d.error,'error') : (toast(`${n} parado`), render()); }
 function openInst(n, port) { window.open(`http://localhost:${port}`); }
 function downloadInst(n) { window.location.href = `/api/download/${encodeURIComponent(n)}`; }
-function removeInst(n) {
+async function removeInst(n, status) {
+  const lg = await api(`/api/logs/${encodeURIComponent(n)}`);
+  const starting = lg && lg.done === false;
+  const aviso = [starting ? 'Se está iniciando — el arranque se cancelará.' : '', status === 'running' ? 'Está encendido y se parará a la fuerza.' : ''].filter(Boolean).join(' ');
   const m = document.createElement('div'); m.className = 'modal-overlay';
-  m.innerHTML = `<div class="modal"><h2>Borrar ${n}</h2><p class="subtitle" style="margin-bottom:16px;">Se borra TODO, incluido el vault. Si quieres conservarlo, descárgalo antes — es opcional: <a href="#" onclick="event.preventDefault();downloadInst('${n}');">Descargar vault</a></p><input class="input" id="rm-confirm" placeholder="Escribe ${n} para confirmar" autofocus><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-danger" id="rm-btn" disabled>Borrar</button></div></div>`;
+  m.innerHTML = `<div class="modal"><h2>Borrar ${n}</h2><p class="subtitle" style="margin-bottom:16px;">Se borra TODO, incluido el vault. ${aviso}Si quieres conservarlo, descárgalo antes — es opcional: <a href="#" onclick="event.preventDefault();downloadInst('${n}');">Descargar vault</a></p><input class="input" id="rm-confirm" placeholder="Escribe ${n} para confirmar" autofocus><div class="modal-actions"><button class="btn btn-secondary" onclick="this.closest('.modal-overlay').remove()">Cancelar</button><button class="btn btn-danger" id="rm-btn" disabled>Borrar</button></div></div>`;
   document.body.appendChild(m);
   const btn = m.querySelector('#rm-btn');
-  m.querySelector('#rm-confirm').oninput = e => { btn.disabled = e.target.value !== n; };
+  const hintEl = m.querySelector('#rm-hint') || (() => { const d = document.createElement('div'); d.id = 'rm-hint'; d.style.cssText = 'min-height:18px;font-size:12px;color:var(--color-text-tertiary);margin-top:4px;'; m.querySelector('.modal').insertBefore(d, m.querySelector('.modal-actions')); return d; })();
+  // v1.5 (U2): case-insensitive + pista visible cuando no coincide (antes: botón gris sin explicación)
+  m.querySelector('#rm-confirm').oninput = e => {
+    const v = e.target.value.trim();
+    const match = v.toLowerCase() === n.toLowerCase();
+    btn.disabled = !match;
+    hintEl.textContent = v && !match ? `No coincide — cópialo tal cual: ${n}` : '';
+  };
   btn.onclick = async () => {
-    m.remove(); showLoading(`Eliminando ${n}...`);
-    const d = await api(`/api/remove/${encodeURIComponent(n)}`, {method:'POST'});
+    m.remove(); showLoading(`Eliminando ${n} (puede tardar si es grande)...`);
+    const d = await api(`/api/remove/${encodeURIComponent(n)}`, {method:'POST', __timeout: 330000});
     hideLoading();
     d.error ? toast(d.error, 'error') : (toast(`${n} eliminado`), render());
   };

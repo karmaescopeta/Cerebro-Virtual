@@ -49,6 +49,7 @@ instances/
 tests/__pycache__/
 installer/build/
 installer/dist/
+installer/dist*/
 installer/__pycache__/
 # Dev sandboxes y planes de diseño (no van al repo: la app real es frontend/)
 frontend-test4/

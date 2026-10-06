@@ -23,13 +23,23 @@ Tu segundo cerebro, en tu propio ordenador. Le das documentos y la IA los lee, l
 
 ## ¿Qué necesitas antes de empezar?
 
-Dos cosas, ambas gratis:
+Tres cosas, todas gratis:
 
-1. **Docker Desktop** — el motor que hace funcionar Cerebro Virtual.
+1. **Virtualización activada** — Docker la necesita para funcionar. La mayoría de ordenadores modernos ya la tienen.
+   - **Compruébalo**: abre el Administrador de tareas (`Ctrl+Shift+Esc`) → pestaña **Rendimiento** → **CPU**. Abajo a la derecha dice "Virtualización".
+   - **Si dice "Habilitado"**: listo, salta al punto 2.
+   - **Si dice "Deshabilitado"**: hay que activarla en la BIOS/UEFI (es seguro, solo cambia un ajuste):
+     1. Reinicia el ordenador y pulsa la tecla de entrada a BIOS/UEFI mientras arranca — suele ser **Supr**, **F2** o **F10** (depende del fabricante; si no sabes cuál es, busca "cómo entrar en la BIOS + tu marca de ordenador").
+     2. Busca un ajuste llamado **"Intel Virtualization Technology"** (o "VT-x", "Intel VT-x") en procesadores Intel, o **"SVM Mode"** en AMD. Suele estar en Advanced, CPU Configuration o similar.
+     3. Actívalo (**Enabled**), guarda y sal (normalmente **F10** = guardar y reiniciar).
+     4. Al volver a Windows, activa las características de Windows: Panel de control → Programas → "Activar o desactivar las características de Windows" → marca **"Plataforma de máquina virtual"** y **"Subsistema de Windows para Linux"** → Aceptar → reinicia si te lo pide. (Opcionalmente, más rápido: abre una terminal y ejecuta `wsl --install`, y reinicia.)
+   - Si algo falta, Docker Desktop te avisará él solo al arrancarlo.
+
+2. **Docker Desktop** — el motor que hace funcionar Cerebro Virtual.
    - Descárgalo de https://www.docker.com/products/docker-desktop/
    - Instálalo y ábrelo una vez (debe quedar corriendo en segundo plano, lo verás en la barra de tareas).
 
-2. **Una clave de OpenRouter** — para la IA en la nube.
+3. **Una clave de OpenRouter** — para la IA en la nube.
    - Ve a https://openrouter.ai/ y créate una cuenta (gratis).
    - Entra en https://openrouter.ai/keys y pulsa "Create Key".
    - Copia la clave que te da (empieza por `sk-or-...`). La necesitarás más abajo.
@@ -51,47 +61,50 @@ Ve a [Releases](https://github.com/karmaescopeta/Cerebro-Virtual/releases) y des
 
 > El ejecutable de Windows no está firmado: al abrirlo por primera vez Windows muestra SmartScreen → pulsa **"Más información" → "Ejecutar igualmente"**.
 
-Doble clic. Se abre tu navegador con el gestor. Ahí verás:
+Doble clic. Se abre tu navegador con el gestor, que te guía solo:
 
-1. **Los requisitos** (Docker Desktop, etc.) con enlaces de descarga si falta algo, y un botón **"Instalar dependencias"** que lo instala todo de golpe (te pedirá permiso de Windows, tú solo aceptas).
-2. La pregunta **"¿Dónde guardo tus cerebros?"** — se abre el explorador de archivos de toda la vida: navega hasta la carpeta que quieras (por ejemplo `D:\`) y crea una nueva si hace falta. Vale cualquier disco.
-3. Pulsa **"Instalar en esta carpeta"** y el gestor descarga el proyecto (~un minuto).
+1. Primero pregunta **"¿Ya tienes Cerebro Virtual instalado en este ordenador?"** — si es tu primera vez, elige **"No — instalarlo ahora"**.
+2. Llega la pregunta **"¿Dónde guardo tus cerebros?"** — se abre el explorador de archivos de toda la vida: navega hasta la carpeta que quieras (por ejemplo `D:\`) y crea una nueva si hace falta. Vale cualquier disco. (Opcional: marca *"Instalar aquí también todo lo que Docker descarga"* para liberar espacio del disco de Windows.)
+3. Pulsa **"Instalar en esta carpeta"** — el gestor descarga e instala el sistema (~un minuto), con una pantalla de progreso en todo momento.
+4. Mientras, mira los **requisitos** (Docker, etc.): si falta algo, el botón **"Instalar dependencias"** lo instala todo de golpe (acepta el aviso de Windows). Si Docker ya está instalado pero parado, el botón **"Arrancar Docker"** lo enciende por ti.
 
 Dentro de la carpeta que elijas queda esta estructura:
 
 ```
 la carpeta que elegiste\
-└── gestor_de_cerebros\     ← el sistema (código + configuración)
-    ├── cerebro1\            ← un cerebro = una carpeta con su nombre
-    │   └── vault\           ← los datos de ESE cerebro, aquí y solo aquí
+└── gestor_de_cerebros\        ← tus cerebros: una carpeta por cada uno
+    ├── cerebro1\               ← un cerebro = una carpeta con su nombre
+    │   └── vault\              ← los datos de ESE cerebro, aquí y solo aquí
     ├── cerebro2\
     │   └── vault\
-    └── ...
+    └── imagen_Sistema_Base\    ← el programa en sí (no hace falta tocarlo)
 ```
 
-Cada cerebro con todos sus archivos vive en su propia carpeta, con su nombre. Si algún día quieres buscar a mano tus notas, sabes exactamente dónde están.
+Cada cerebro con todos sus archivos vive en su propia carpeta, con su nombre. Si algún día quieres buscar a mano tus notas, sabes exactamente dónde están. El programa en sí vive aparte, en `imagen_Sistema_Base`, para que la carpeta de tus cerebros quede limpia y fácil de leer.
 
 > En Windows, el gestor crea un acceso directo en el escritorio la primera vez que lo abres. Puedes moverlo donde quieras: el gestor recuerda dónde vive tu sistema.
 
 ### 2. Crear tu primer cerebro
 
-Pulsa **"Nuevo cerebro"**, dale un nombre y dale a **Iniciar**. La primera vez tarda varios minutos (descarga las imágenes de Docker, ~3GB).
+Pulsa **"Nuevo cerebro"**, dale un nombre y dale a **Iniciar**. La primera vez tarda varios minutos (descarga las imágenes de Docker, ~3GB): el panel muestra un reloj, la última línea de actividad y las descargas en español, para que veas que sigue trabajando.
+
+Los **puertos se asignan solos, una única vez, y quedan fijos** para siempre — no hay que configurar nada, y si algún día usas el acceso remoto, no se te desconfigura.
 
 Cuando termine, pulsa **Abrir**: aparece un asistente que te pide la clave de OpenRouter, el nombre de tu agente, una contraseña de acceso y los modelos. Todo trae valores por defecto; solo la clave es imprescindible si quieres usar la nube.
 
-> **¿Necesitas cambiar algo después?** Todo está en Ajustes (el icono de engranaje). Desde ahí cambias la clave, los modelos, la contraseña, el túnel de acceso remoto, las copias de seguridad, etc.
+> **¿Necesitas cambiar algo después?** Entra en tu cerebro → pestaña **Ajustes**: desde ahí cambias la clave, los modelos, la contraseña, el túnel de acceso remoto, las copias de seguridad, etc. (Lo del gestor — carpeta del sistema, mudanzas, espacio del disco — está en la **tuerca** de arriba a la derecha del gestor.)
 
 ---
 
 ## ¿Ya lo tenías instalado? (actualizar o cambiar de ordenador)
 
-El gestor nuevo no necesita reinstalar nada. Al abrirlo, en la pantalla de tus cerebros:
+El gestor nuevo no necesita reinstalar nada. Al abrirlo, si no encuentra tu sistema, la primera pregunta es si ya lo tienes instalado — y todo lo demás vive en **Ajustes** (la tuerca, arriba a la derecha):
 
-- **"Abrir carpeta existente"** — le dice al gestor dónde vive tu sistema ya instalado (porque acabas de bajar un gestor nuevo, o porque moviste la carpeta a mano). Señalas la carpeta y al momento aparecen todos tus cerebros. No copia ni mueve nada.
-- **"Mover todo a otra carpeta"** — muda físicamente el sistema completo a otra carpeta o disco, por ejemplo de `C:` a `D:`. Los cerebros encendidos se apagan un momento durante el traslado y se vuelven a encender solos al terminar.
-- El icono de **"i"** junto a cada botón te explica para qué sirve, por si dudas.
+- **"Usar un sistema ya instalado"** — le dice al gestor dónde vive tu sistema (porque acabas de bajar un gestor nuevo, o porque moviste la carpeta a mano). Señalas la carpeta y al momento aparecen todos tus cerebros. No copia ni mueve nada.
+- **"Cambiar de carpeta o disco"** — muda físicamente el sistema completo a otra carpeta o disco, por ejemplo de `C:` a `D:`. Los cerebros encendidos se apagan un momento durante el traslado y se vuelven a encender solos al terminar.
+- **"Liberar espacio del disco de Windows"** — lleva todo lo que Docker descarga desde `C:` a la carpeta de tus cerebros.
 
-Y si el gestor encuentra cerebros instalados en otras carpetas del equipo, te lo avisa y te ofrece centralizarlos.
+Cada ajuste lleva su explicación al lado en el propio panel. Y si el gestor encuentra cerebros instalados en otras carpetas del equipo, te lo avisa y te ofrece centralizarlos.
 
 ---
 
@@ -131,30 +144,38 @@ Tus datos (el vault, tus cerebros, tu configuración) no se tocan. Solo se actua
 
 ## Si algo falla
 
-**"Docker no encontrado"** → Docker Desktop no está corriendo. Ábrelo y espera a que el icono de la barra de tareas deje de animar.
+Todo esto se resuelve desde el gestor o desde la propia interfaz — sin terminales:
 
-**"Puerto en uso"** → Otro programa usa ese puerto. Si sabes qué es un `.env`, cambia por ejemplo `FRONTEND_PORT=5174` y reinicia. Si no, cierra el otro programa.
+**El gestor dice que falta Docker** → En la pantalla de requisitos, el botón **"Arrancar Docker"** lo enciende por ti. Si no aparece, usa **"Instalar dependencias"** y acepta el aviso de Windows. El gestor detecta solo cuándo Docker está listo (la página se refresca cada pocos segundos).
 
-**"La IA no responde"** → Ve a Ajustes y comprueba que tu clave de OpenRouter es correcta y tiene saldo. Crea una nueva en https://openrouter.ai/keys si hace falta.
+**Docker se queja de virtualización / WSL / Hyper-V** → Tu ordenador no tiene la virtualización activada. Arriba, en "¿Qué necesitas antes de empezar?", el paso 1 explica cómo activarla (es un cambio en la BIOS + una característica de Windows + reinicio).
 
-**Ver logs (para diagnosticar):**
+**La instalación no avanza** → Normal. La primera vez se descargan ~3GB de imágenes y tarda varios minutos. El panel de instalación del gestor muestra un reloj y la última línea de actividad para que veas que sigue trabajando. No cierres esa página.
+
+**"La IA no responde"** → Entra en tu cerebro (botón **Abrir**) → **Ajustes** y comprueba que tu clave de OpenRouter es correcta y tiene saldo. Crea una nueva en https://openrouter.ai/keys si hace falta.
+
+**Un cerebro no arranca / se quedó a medias** → En la tabla de cerebros, **Parar** y vuelve a dar a **Iniciar**. El panel del gestor muestra el log completo del arranque: la última línea dice qué pasó. Si un cerebro grande tarda en pararse, el gestor te lo dice — dale un momento y reintenta.
+
+**Cosas raras con puertos** → No los toques: cada cerebro recibe sus puertos automáticamente la primera vez y quedan fijos (dos cerebros nunca comparten puertos). Si un día el gestor avisa de que otro programa ocupó el puerto de un cerebro, cierra ese programa y vuelve a dar a **Iniciar** — el cerebro no cambia de puertos.
+
+**Nada de esto funciona** → Abre un [issue](https://github.com/karmaescopeta/Cerebro-Virtual/issues) pegando las últimas líneas del panel del gestor.
+
+### Para técnicos
+
+Si prefieres los comandos, los logs también están a un paso:
 ```bash
 docker compose logs -f backend           # qué hace el backend
 docker compose logs -f sistema-agente    # qué hace el agente IA
-```
-
-**Parar todo:**
-```bash
-docker compose down
+docker compose down                      # parar todo
 ```
 
 ---
 
 ## ¿Dónde se guardan mis datos?
 
-Todo lo que subes y genera un cerebro vive en `vault/`, dentro de la carpeta con su nombre: `gestor_de_cerebros\<nombre del cerebro>\vault\`. Es solo tuyo: no se sube a internet y no lo ve nadie más. Si borras esa carpeta, pierdes los datos de ese cerebro (haz copias con el botón Exportar en Ajustes).
+Todo lo que subes y genera un cerebro vive en `vault/`, dentro de la carpeta con su nombre: `gestor_de_cerebros\<nombre del cerebro>\vault\`. Es solo tuyo: no se sube a internet y no lo ve nadie más. Si borras esa carpeta, pierdes los datos de ese cerebro (haz copias con el botón Exportar en los Ajustes de la app, dentro de tu cerebro).
 
-¿Lo quieres en otro disco? **"Mover todo a otra carpeta"** en el gestor hace la mudanza solo. Y para liberar espacio en `C:` moviendo las imágenes de Docker, está el botón **"Mover datos de Docker aquí"** en la sección de Requisitos.
+¿Lo quieres en otro disco? **Ajustes (la tuerca, arriba a la derecha) → "Cambiar de carpeta o disco"** en el gestor hace la mudanza solo. El mismo panel tiene **"Liberar espacio del disco de Windows"**: mueve todo lo que Docker descarga (suelen ser varios GB) desde `C:` a la carpeta de tus cerebros.
 
 ---
 
@@ -168,19 +189,19 @@ Cloudflare Tunnel crea un pasadizo cifrado entre tu Cerebro y una dirección pú
 
 **Opción fácil (desde la interfaz):** Ajustes → sección del túnel → pega tu token ahí. El sistema lo guarda y activa el túnel.
 
-**Opción manual (editando `.env`):** pega el token en tu archivo `.env`:
+**Opción manual (editando `.env`):** pega el token en el `.env` del cerebro (`gestor_de_cerebros\<nombre del cerebro>\.env`):
 
 ```
 CLOUDFLARE_TUNNEL_TOKEN=eyJ...todo-el-token...
 ```
 
-Y reinicia con `docker compose up -d`.
+Y vuelve a dar a **Iniciar** en el gestor (el túnel se activa solo al arrancar).
 
 Para conseguir el token:
 1. Crea una cuenta gratis en https://one.dash.cloudflare.com/
 2. En el panel: **Networks → Tunnels → Create a tunnel**.
 3. Sigue los pasos. Te dará un token largo (empieza por `eyJ...`).
-4. Configura el túnel para que apunte a `http://cerebro-frontend:5173` (o el puerto que pusiste).
+4. Configura el túnel para que apunte a `http://frontend:80` — es la dirección interna del cerebro y no depende de los puertos que tenga asignados.
 
 Con eso, accedes desde el móvil con la URL que te dé Cloudflare.
 
@@ -236,7 +257,7 @@ La extracción de texto de documentos usa `markitdown` (con OCR como respaldo pa
 
 ### Multi-instancia
 
-Un `docker-compose.yml` parameterizado: `VAULT_DIR`, `ENV_FILE`, `COMPOSE_PROJECT_NAME` y los puertos vienen del `.env` de cada instancia en `instances/<nombre>/`. Cada cerebro es su proyecto de compose con su red aislada; no hay comunicación entre instancias.
+Un solo `docker-compose.yml` (en `imagen_Sistema_Base/`) parameterizado: `VAULT_DIR`, `ENV_FILE`, `COMPOSE_PROJECT_NAME` y los puertos vienen del `.env` de cada cerebro (`gestor_de_cerebros\<nombre>\.env`). Cada cerebro es su proyecto de compose con su red aislada; no hay comunicación entre instancias. Los puertos los asigna el gestor automáticamente la primera vez que enciendes cada cerebro y a partir de ahí quedan fijos en el `.env` — nunca dos cerebros comparten puertos, y los apaga/enciende cuantas veces quieras sin que cambien.
 
 ### Seguridad
 
