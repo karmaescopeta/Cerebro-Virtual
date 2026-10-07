@@ -10,21 +10,27 @@ CONFIG_JSON = os.getenv("AGENT_CONFIG_JSON", "/app/vault/system/agent-config.jso
 
 
 def hash_password(password: str) -> str:
-    """Return a Hermes-compatible password hash for the dashboard password."""
+    """Return a Hermes-compatible password hash for the dashboard password.
+    v1.6.5: el plugin basic de Hermes verifica scrypt$N$R$P$salt$dk — el fallback
+    bcrypt producía hashes que el plugin SIEMPRE rechaza (login roto). Import real
+    del plugin (checkout en sys.path); fallback scrypt idéntico, params del plugin."""
+    import sys
+    for checkout in ("/app/hermes-home/hermes-agent", "/usr/local/lib/hermes-agent"):
+        if Path(checkout).is_dir() and checkout not in sys.path:
+            sys.path.insert(0, checkout)
     try:
         from plugins.dashboard_auth.basic import hash_password as hermes_hash_password
         return hermes_hash_password(password)
     except Exception:
         pass
 
-    try:
-        import bcrypt
-        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt())
-        return hashed.decode("utf-8") if isinstance(hashed, bytes) else str(hashed)
-    except Exception as exc:
-        raise RuntimeError(
-            "bcrypt no está disponible; no se puede generar la contraseña segura del dashboard"
-        ) from exc
+    # ponytail: replicar el formato del plugin (stdlib) — mismos params (_SCRYPT_* del plugin)
+    import base64
+    import hashlib
+    import secrets
+    salt = secrets.token_bytes(16)
+    dk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=16384, r=8, p=1, dklen=32, maxmem=0)
+    return f"scrypt$16384$8$1${base64.b64encode(salt).decode()}${base64.b64encode(dk).decode()}"
 
 
 def main():
