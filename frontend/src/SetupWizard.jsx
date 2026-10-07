@@ -176,6 +176,7 @@ function SetupWizard({ onComplete }) {
   if (step === 3)
     return (
       <WizardStepProviders
+        formData={formData}
         onBack={() => setStep(2)}
         onNext={() => setStep(4)}
       />

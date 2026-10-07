@@ -2370,7 +2370,7 @@ async def configure_agent(request: dict):
 
         provision = {"success": False}
         if ia_mode in ("local", "cloud", "both"):
-            provision = await _omni_provision_combos(ia_mode)
+            provision = await _omni_provision_combos(ia_mode, or_key=api_key)
             if not provision.get("success"):
                 # no bloquea la instalación: startup reintenta con combosProvisioned=false
                 print(f"⚠️ provision combos diferido: {provision.get('errors') or provision.get('error')}")
@@ -4313,32 +4313,44 @@ def _omni_password() -> str:
     return ""
 
 
-def _update_env_password(password: str):
-    """Escribe OMNIROUTE_MANAGE_PASSWORD en /app/.env (mismo patrón que _update_env_token)."""
+def _read_env_var(key: str) -> str:
+    """Lee una var de /app/.env fresca (el env del proceso queda congelado desde el arranque)."""
+    env_path = Path("/app/.env")
+    if env_path.exists():
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            if line.startswith(key + "="):
+                return line.split("=", 1)[1].strip()
+    return ""
+
+
+def _update_env_var(key: str, value: str):
+    """Escribe/actualiza una var en /app/.env (mismo patrón que _update_env_token)."""
     env_path = Path("/app/.env")
     if not env_path.exists():
         return
     lines = env_path.read_text(encoding="utf-8").splitlines()
-    updated = False
+    prefix = key + "="
     for i, line in enumerate(lines):
-        if line.startswith("OMNIROUTE_MANAGE_PASSWORD="):
-            lines[i] = f"OMNIROUTE_MANAGE_PASSWORD={password}"
-            updated = True
+        if line.startswith(prefix):
+            lines[i] = f"{key}={value}"
             break
-    if not updated:
-        lines.append(f"OMNIROUTE_MANAGE_PASSWORD={password}")
+    else:
+        lines.append(f"{key}={value}")
     env_path.write_text("\n".join(lines) + "\n")
 
 
 def _recreate_omniroute():
-    """Recrea omniroute para re-aplicar INITIAL_PASSWORD (se re-aplica en cada recreate, verificado)."""
+    """Recrea omniroute para re-aplicar INITIAL_PASSWORD (se re-aplica en cada recreate, verificado).
+    v1.6.3: el env del backend congela OMNIROUTE_MANAGE_PASSWORD VACÍA al crear el stack; una var
+    seteada-vacía PISA el .env en la interpolación de compose → pasar la clave fresca explícita."""
     subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "omniroute"),
+                   env={**os.environ, "OMNIROUTE_MANAGE_PASSWORD": _omni_password()},
                    capture_output=True, text=True, timeout=120)
 
 
 def _apply_dashboard_password(password: str) -> str:
     """Password unificada: wizard/ajustes → .env + recreate omniroute. Devuelve mensaje de estado."""
-    _update_env_password(password)
+    _update_env_var("OMNIROUTE_MANAGE_PASSWORD", password)
     _recreate_omniroute()
     # ponytail: omniroute (Next.js) tarda ~7s en escuchar — retry, no sleep fijo
     import time
@@ -4353,8 +4365,52 @@ def _apply_dashboard_password(password: str) -> str:
     return "omniroute-warn (sin respuesta tras recreate)"
 
 
-async def _omni_provision_combos(mode: str) -> dict:
-    """Crea los combos base en OmniRoute según modo (local/cloud/both)
+async def _omni_ensure_connections(want_local: bool, or_key: str) -> list[str]:
+    """Crea conexiones openrouter (clave fresca) y ollama-local si faltan. Requiere login previo.
+    ponytail: conexión openrouter existente NO se actualiza si la clave cambia — borrarla en el panel y reintentar."""
+    errors = []
+    r = await _omni_client.get("/api/providers")
+    existing = []
+    if r.status_code == 200:
+        data = r.json()
+        existing = data if isinstance(data, list) else (data.get("connections") or data.get("providers") or [])
+    have = {c.get("provider") for c in existing}
+    if "openrouter" not in have and or_key:
+        r = await _omni_client.post("/api/providers", json={
+            "provider": "openrouter", "apiKey": or_key,
+            "name": "OpenRouter principal", "priority": 10})
+        if r.status_code not in (200, 201):
+            errors.append(f"openrouter: {r.status_code} {r.text[:100]}")
+    if want_local and "ollama-local" not in have:
+        r = await _omni_client.post("/api/providers", json={
+            "provider": "ollama-local", "apiKey": "", "name": "Ollama Cerebro",
+            "providerSpecificData": {"baseUrl": "http://ollama:11434/v1"}})
+        if r.status_code not in (200, 201):
+            errors.append(f"ollama-local: {r.status_code} {r.text[:100]}")
+
+    # v1.6.3: el catálogo de una conexión openrouter nueva llega casi vacío (~24 modelos) y el
+    # pre-dispatch salta combos cuyos modelos no están en catálogo → sincronizar siempre.
+    r = await _omni_client.get("/api/providers")
+    if r.status_code == 200:
+        data = r.json()
+        conns = data if isinstance(data, list) else (data.get("connections") or data.get("providers") or [])
+        or_conn = next((c for c in conns if c.get("provider") == "openrouter"), None)
+        if or_conn:
+            await _omni_client.post(f"/api/providers/{or_conn['id']}/sync-models", json={})
+
+    # v1.6.3: OmniRoute nuevo exige client key en /v1 (fail-closed) — crear una y dejarla en
+    # .env; sistema-agente la recoge al crearse/recrearse. En stacks viejos sin /api/keys: no-op.
+    if not _read_env_var("OMNIROUTE_API_KEY").startswith("sk-"):
+        rk = await _omni_client.post("/api/keys", json={"name": "cerebro-hermes"})
+        if rk.status_code in (200, 201):
+            kv = (rk.json() or {}).get("key") or ""
+            if kv:
+                _update_env_var("OMNIROUTE_API_KEY", kv)
+    return errors
+
+
+async def _omni_provision_combos(mode: str, or_key: str = None) -> dict:
+    """Crea conexiones + combos base en OmniRoute según modo (local/cloud/both)
     y escribe models/modelsLocal en agent-config.json. Idempotente."""
     password = _omni_password()
     if not password:
@@ -4367,6 +4423,10 @@ async def _omni_provision_combos(mode: str) -> dict:
     want_cloud = mode in ("cloud", "both")
     if not want_local and not want_cloud:
         return {"success": False, "error": f"modo inválido: {mode}"}
+
+    # v1.6.3: sin conexión no hay combos vivos — asegurar conexiones ANTES de los combos
+    or_key = or_key or get_agent_key("hermes") or OPENROUTER_API_KEY
+    conn_errors = await _omni_ensure_connections(want_local, or_key)
 
     to_create = {}
     local_errors = []
@@ -4394,7 +4454,7 @@ async def _omni_provision_combos(mode: str) -> dict:
         for c in (data.get("combos") or []):
             existing.add(c.get("name"))
 
-    created, errors = [], list(local_errors)
+    created, errors = [], list(conn_errors) + list(local_errors)
     for name, models in to_create.items():
         if name in existing:
             continue
@@ -4429,6 +4489,65 @@ async def ia_provision_ep():
     return await _omni_provision_combos(mode)
 
 
+# ---------- Wizard paso 3: OmniRoute en vivo ----------
+@app.get("/api/omni/state")
+async def omni_state():
+    """Estado real de OmniRoute para el wizard: login, combos y conexiones (nunca claves)."""
+    pw = _omni_password()
+    if not pw:
+        return {"ready": False, "reason": "sin-contrasena"}
+    r = await _omni_client.post("/api/auth/login", json={"password": pw})
+    if r.status_code != 200:
+        return {"ready": False, "reason": "login-fallido"}
+    combos = []
+    rc = await _omni_client.get("/api/combos")
+    if rc.status_code == 200:
+        combos = [{"name": c.get("name"),
+                   "models": [m if isinstance(m, str) else (m.get("model") or "") for m in (c.get("models") or [])]}
+                  for c in (rc.json().get("combos") or [])]
+    providers = []
+    rp = await _omni_client.get("/api/providers")
+    if rp.status_code == 200:
+        data = rp.json()
+        raw = data if isinstance(data, list) else (data.get("connections") or data.get("providers") or [])
+        providers = [{"provider": p.get("provider"), "name": p.get("name")} for p in raw]
+    return {"ready": True, "combos": combos, "providers": providers}
+
+
+@app.post("/api/omni/preconfigure")
+async def omni_preconfigure(req: dict):
+    """Wizard paso 3: aplica la contraseña unificada y provisiona conexiones+combos ANTES de 'Crear'.
+    Idempotente — el 'Crear' final vuelve a pasar por el mismo provision."""
+    pw = (req.get("dashboardPassword") or "").strip()
+    status = ""
+    if pw:
+        status = await run_in_threadpool(_apply_dashboard_password, pw)
+    key = (req.get("apiKey") or "").strip()
+    mode = req.get("iaMode", "both")
+    prov = await _omni_provision_combos(mode, or_key=key or None)
+    return {"success": prov.get("success", False), "passwordStatus": status, "provision": prov}
+
+
+@app.post("/api/omni/providers")
+async def omni_add_provider(req: dict):
+    """Wizard paso 3: alta de proveedor extra directo en OmniRoute."""
+    pw = _omni_password()
+    if not pw:
+        raise HTTPException(status_code=409, detail="Falta la contraseña del paso anterior")
+    r = await _omni_client.post("/api/auth/login", json={"password": pw})
+    if r.status_code != 200:
+        raise HTTPException(status_code=402, detail=f"login OmniRoute falló: {r.text[:150]}")
+    provider = (req.get("provider") or "").strip()
+    api_key = (req.get("apiKey") or "").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,30}", provider) or not api_key:
+        raise HTTPException(status_code=400, detail="Proveedor o API key inválidos")
+    r = await _omni_client.post("/api/providers", json={"provider": provider, "apiKey": api_key,
+                                                        "name": provider, "priority": 10})
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"OmniRoute rechazó el proveedor: {r.text[:150]}")
+    return {"success": True, "provider": provider}
+
+
 @app.on_event("startup")
 async def _startup_provision_combos():
     """Provision combos al arranque si provisionado=false (omniroute puede tardar en healthy)."""
@@ -4460,36 +4579,11 @@ async def omniroute_provision():
     if not password:
         raise HTTPException(status_code=400,
             detail="OMNIROUTE_MANAGE_PASSWORD no está en .env — ponla y recrea omniroute")
-    or_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not or_key:
-        for line in Path("/app/.env").read_text(encoding="utf-8").splitlines():
-            if line.startswith("OPENROUTER_API_KEY="):
-                or_key = line.split("=", 1)[1].strip()
-                break
-    # 1. login → cookie
     r = await _omni_client.post("/api/auth/login", json={"password": password})
     if r.status_code != 200:
         raise HTTPException(status_code=402, detail=f"login OmniRoute falló: {r.text[:150]}")
-    # 2. listar existentes
-    r = await _omni_client.get("/api/providers")
-    existing = []
-    if r.status_code == 200:
-        data = r.json()
-        existing = data if isinstance(data, list) else (data.get("connections") or data.get("providers") or [])
-    have = {c.get("provider") for c in existing}
-    created = []
-    if "openrouter" not in have and or_key:
-        r = await _omni_client.post("/api/providers", json={
-            "provider": "openrouter", "apiKey": or_key,
-            "name": "OpenRouter principal", "priority": 10})
-        created.append({"provider": "openrouter", "status": r.status_code})
-    if "ollama-local" not in have:
-        r = await _omni_client.post("/api/providers", json={
-            "provider": "ollama-local", "apiKey": "", "name": "Ollama Cerebro",
-            "providerSpecificData": {"baseUrl": "http://ollama:11434/v1"}})
-        created.append({"provider": "ollama-local", "status": r.status_code})
-    return {"success": True, "created": created,
-            "existing": [{"provider": c.get("provider"), "name": c.get("name")} for c in existing]}
+    errors = await _omni_ensure_connections(True, get_agent_key("hermes") or OPENROUTER_API_KEY)
+    return {"success": not errors, "errors": errors}
 
 
 @app.websocket("/ollama-ws/terminal/{container}")
