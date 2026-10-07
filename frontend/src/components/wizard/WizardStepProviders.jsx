@@ -10,11 +10,13 @@ function WizardStepProviders({ formData, onNext, onBack }) {
   const [newProvider, setNewProvider] = useState('')
   const [newKey, setNewKey] = useState('')
   const [addMsg, setAddMsg] = useState('')
+  const [provMsg, setProvMsg] = useState('')
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
-    // v1.6.3: registra la contraseña unificada y provisiona conexiones+combos YA (idempotente:
-    // el 'Crear' final repite lo mismo). Así el usuario ve sus combos y puede añadir proveedores.
+    // v1.6.6: registra la contraseña unificada y provisiona conexiones+combos YA (idempotente:
+    // el 'Crear' final repite lo mismo). Los errores del provision (p.ej. key de OpenRouter
+    // rechazada) se muestran aquí al instante — antes se ignoraban en silencio.
     fetch('/api/omni/preconfigure', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -22,6 +24,9 @@ function WizardStepProviders({ formData, onNext, onBack }) {
         apiKey: formData.apiKey,
         iaMode: formData.iaMode,
       }),
+    }).then(r => r.json()).then((d) => {
+      const errs = (d?.provision?.errors) || []
+      if (errs.length) setProvMsg('⚠ ' + errs.join(' · '))
     }).catch(() => {})
     let tries = 0
     const load = async () => {
@@ -73,6 +78,7 @@ function WizardStepProviders({ formData, onNext, onBack }) {
             Cada tarea de tu asistente usa un combo (equipo de modelos):
           </p>
           {!state && <p className="form-hint-text">Preparando OmniRoute…</p>}
+          {provMsg && <p className="form-hint-text" style={{ color: 'var(--color-warning, #b8860b)' }}>{provMsg}</p>}
           {state && !state.ready && (
             <p className="form-hint-text">
               OmniRoute se configurará con tu contraseña al pulsar Crear.
