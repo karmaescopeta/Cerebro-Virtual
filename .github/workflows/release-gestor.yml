@@ -28,6 +28,6 @@ jobs:
       - name: rename asset
         shell: bash
         run: mv installer/dist/GestorDeCerebros* "installer/dist/${{ matrix.asset }}"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: installer/dist/${{ matrix.asset }}
