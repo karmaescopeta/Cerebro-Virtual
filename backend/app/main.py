@@ -4413,6 +4413,11 @@ async def _omni_ensure_connections(want_local: bool, or_key: str) -> list[str]:
             kv = (rk.json() or {}).get("key") or ""
             if kv:
                 _update_env_var("OMNIROUTE_API_KEY", kv)
+                # v1.6.3: el env del sistema-agente se congela al crearlo (antes de esta key) y
+                # generate_config.py usa OMNIROUTE_API_KEY → recrear para que el chat use la client key.
+                # ponytail: solo pasa al escribir una key NUEVA (idempotente), momento del wizard.
+                subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"),
+                               capture_output=True, text=True, timeout=120)
     return errors
 
 
