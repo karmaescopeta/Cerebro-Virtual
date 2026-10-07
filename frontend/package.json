@@ -14,7 +14,7 @@
     "react-router-dom": "^6.23.1",
     "@tiptap/react": "^2.11.0",
     "@tiptap/pm": "^2.11.0",
-    "@tiptap/starter-kit": "^2.11.0",
+    "@tiptap/starter-kit": "^3.31.4",
     "@tiptap/extension-table": "^2.11.0",
     "tiptap-markdown": "^0.8.10",
     "@tiptap/extension-table-row": "^2.11.0",
