@@ -14,7 +14,10 @@ RUN apt-get update && apt-get install -y \
 # (sin venv clásico: el agente vive en installs/<hash>/environments/*/venv)
 ENV HERMES_HOME=/app/hermes-home
 ENV PATH="/root/.local/bin:${PATH}"
-RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --skip-browser
+# main@0e21933: build web UI roto (TS1484) + cua-driver default (necesita libXi.so.6, ausente en slim)
+# → commit fijado al último verificado (2026-09-26; su pm no instala cua-driver por defecto).
+# Al subir el pin: añadir --skip-computer-use (pm nuevo lo exige para omitir cua-driver). Decisión de release.
+RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --skip-setup --skip-browser --commit 188261f4bc42dc4e324e91cf1cfd9858da2e5606
 
 # bcrypt+pyyaml para la auth del dashboard: el venv pm no trae pip → pip --python
 RUN V=$(find /app/hermes-home/installs -name pyvenv.cfg | grep environments | head -1 | xargs -r dirname) \
