@@ -264,7 +264,16 @@ function LocalAISection({ profiles, saveLocalAssignments }) {
   const [cmdIdx, setCmdIdx] = useState(0)
     const wsRef = React.useRef(null)
 
-  useEffect(() => { loadStatus(); loadConns() }, [])
+  const [gpu, setGpu] = useState(null)
+
+  useEffect(() => { loadStatus(); loadConns(); loadGpu() }, [])
+
+  async function loadGpu() {
+    try {
+      const res = await fetch('/api/localai/gpu')
+      if (res.ok) setGpu(await res.json())
+    } catch {}
+  }
 
   async function loadStatus() {
     try {
@@ -493,6 +502,16 @@ function LocalAISection({ profiles, saveLocalAssignments }) {
 
           <div className="card" style={{ padding: 'var(--space-4)', marginBottom: 'var(--space-4)' }}>
             <div className="label-caps" style={{ marginBottom: 'var(--space-3)' }}>Descargar modelo</div>
+            {gpu && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', fontSize: 13, marginBottom: 'var(--space-3)', color: gpu.gpu ? 'var(--color-success)' : 'var(--color-warning)' }}>
+                <span className="material-symbols-outlined" style={{ fontSize: 18 }}>{gpu.gpu ? 'bolt' : 'warning'}</span>
+                <span>
+                  {gpu.gpu
+                    ? `Tu GPU: ${gpu.gpu} (${Math.round(gpu.vram_mb / 1024)} GB) — recomendado: modelos de ${gpu.advice}`
+                    : gpu.advice}
+                </span>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 'var(--space-3)', flexWrap: 'wrap' }}>
               <input
                 className="input-app"
