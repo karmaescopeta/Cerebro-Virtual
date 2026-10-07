@@ -228,6 +228,49 @@ def _compose_cmd(*args):
     return cmd + list(args)
 
 
+# v1.6.7: graphify/herramientas corrían con nombres pegados al proyecto 'cerebrovirtual'
+# (red, imagen) — en otra instalación el proyecto se llama otra cosa → 'network not found'
+# → 0 neuronas. Derivar TODO del COMPOSE_PROJECT_NAME real.
+def _project_name() -> str:
+    return os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+
+
+def _herramientas_image() -> str:
+    """compose nombra la imagen construida <project>-<service>."""
+    return f"{_project_name()}-herramientas:latest"
+
+
+def _docker_network() -> str:
+    return f"{_project_name()}_cerebro-network"
+
+
+_VAULT_HOST_CACHE = ""
+
+
+def _vault_host() -> str:
+    """Ruta del vault EN EL HOST para `docker run -v`: VAULT_HOST_PATH o el mount real
+    del propio backend (docker inspect). El fallback VAULT_PATH (/app/vault) es una ruta
+    del contenedor — usada en el host monta un dir vacío → graphify ve 0 archivos."""
+    global _VAULT_HOST_CACHE
+    vh = os.getenv("VAULT_HOST_PATH", "").strip()
+    if vh:
+        return vh
+    if _VAULT_HOST_CACHE:
+        return _VAULT_HOST_CACHE
+    try:
+        r = subprocess.run(["docker", "inspect", f"{_project_name()}-backend-1",
+                            "--format",
+                            '{{range .Mounts}}{{if eq .Destination "/app/vault"}}{{.Source}}{{end}}{{end}}'],
+                           capture_output=True, text=True, timeout=10)
+        src = (r.stdout or "").strip().replace("\\", "/").rstrip("/")
+        if src:
+            _VAULT_HOST_CACHE = src
+            return src
+    except Exception:
+        pass
+    return VAULT_PATH
+
+
 def _agent_http_ready(timeout=1.5):
     """Return True when the Hermes dashboard is reachable on the Docker network."""
     for path in ("/login", "/"):
@@ -459,7 +502,7 @@ def _ensure_herramientas_image() -> bool:
     """Verifica que la imagen Docker de herramientas existe. Si no, la construye."""
     try:
         result = subprocess.run(
-            ["docker", "images", "-q", "cerebrovirtual-herramientas:latest"],
+            ["docker", "images", "-q", _herramientas_image()],
             capture_output=True, text=True, timeout=5
         )
         if result.stdout.strip():
@@ -503,16 +546,18 @@ def _run_graphify(file_abs_path: str, vault_host: str) -> dict | None:
         graphify_model = _get_graphify_model()
         # ponytail: Graphify via OmniRoute (combo cerebro-graphify vive ahí; openrouter directo no conoce combos)
         omni_base = os.getenv("OMNIROUTE_BASE_URL", "http://omniroute:20128")
-        env_vars = ["-e", f"OPENAI_API_KEY={get_agent_key('hermes') or OPENROUTER_API_KEY or ''}",
+        # v1.6.7: OmniRoute nuevo exige la CLIENT key (/v1 fail-closed) — la key de OpenRouter da 401
+        omni_key = os.getenv("OMNIROUTE_API_KEY", "").strip() or _read_env_var("OMNIROUTE_API_KEY")
+        env_vars = ["-e", f"OPENAI_API_KEY={omni_key or get_agent_key('hermes') or OPENROUTER_API_KEY or ''}",
                     "-e", f"OPENAI_BASE_URL={omni_base}/v1",
                     "-e", f"GRAPHIFY_OPENAI_MODEL={graphify_model}",
                     "-e", "GRAPHIFY_FORCE=1"]
         result = subprocess.run(
             ["docker", "run", "--rm",
-             "--network", "cerebrovirtual_cerebro-network",  # ponytail: resolver omniroute (combo) — default bridge no tiene DNS
+             "--network", _docker_network(),  # ponytail: resolver omniroute (combo) — default bridge no tiene DNS
              "-v", f"{vault_host}:/app/vault",
              *env_vars,
-             "cerebrovirtual-herramientas:latest",
+             _herramientas_image(),
              "bash", "/app/scripts/run_graphify.sh", f"/app/vault/{tmp_subdir}", out_abs],
             capture_output=True, text=True, timeout=300
         )
@@ -1553,7 +1598,7 @@ async def save_output(req: SaveOutputRequest):
     for _ in range(3):
         try:
             # ponytail: obtener vault_host real del host (VAULT_PATH es /app/vault dentro del contenedor)
-            vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+            vault_host = _vault_host()
             partial = _run_graphify(str(out_file), vault_host)
             if partial and partial.get("nodes"):
                 _merge_graph(partial, safe_name + ".md")
@@ -1642,7 +1687,7 @@ async def update_vault_file(req: UpdateFileRequest):
 
     graph_ok = False
     try:
-        vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+        vault_host = _vault_host()
         # ponytail: graphify flaquea (reasoning consume el presupuesto y trunca el JSON → 0 nodos aleatorio);
         # 3 intentos y solo purge/merge con extracto NO vacío — grafo viejo > grafo vacío
         for _ in range(3):
@@ -2589,14 +2634,14 @@ async def upload_to_vault(file: UploadFile = File(...), project: str = "individu
     api_key = get_agent_key("hermes") or OPENROUTER_API_KEY
     if api_key:
         import threading
-        vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+        vault_host = _vault_host()
 
         def _wiki_bg():
             try:
                 # 1. extraer texto (docker run herramientas)
                 extract = subprocess.run(
                     ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
-                     "cerebrovirtual-herramientas:latest",
+                     _herramientas_image(),
                      "bash", "/app/scripts/process_raw.sh", f"/app/vault/{file_path}"],
                     capture_output=True, text=True, timeout=300
                 )
@@ -3016,7 +3061,7 @@ async def graph_status():
     # ponytail: verificar imagen sin construir (solo diagnóstico)
     try:
         img_result = subprocess.run(
-            ["docker", "images", "-q", "cerebrovirtual-herramientas:latest"],
+            ["docker", "images", "-q", _herramientas_image()],
             capture_output=True, text=True, timeout=5
         )
         image_exists = bool(img_result.stdout.strip())
@@ -3178,14 +3223,14 @@ async def process_raw_file(request: dict):
         raise HTTPException(status_code=400, detail="No hay API key configurada")
 
     # ponytail: vault host path from env var
-    vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+    vault_host = _vault_host()
 
     # 1. Extraer texto con herramientas
     try:
         extract = subprocess.run(
             ["docker", "run", "--rm",
              "-v", f"{vault_host}:/app/vault",
-             "cerebrovirtual-herramientas:latest",
+             _herramientas_image(),
              "bash", "/app/scripts/process_raw.sh", f"/app/vault/{file_path}"],
             capture_output=True, text=True, timeout=300
         )
@@ -3262,7 +3307,7 @@ async def process_folder(request: dict):
         raise HTTPException(status_code=400, detail="No hay API key configurada")
 
     # ponytail: obtener host path del vault
-    vault_host = os.getenv("VAULT_HOST_PATH", "") or VAULT_PATH
+    vault_host = _vault_host()
 
     # 1. Extraer texto de cada archivo
     topic = folder.name
@@ -3276,7 +3321,7 @@ async def process_folder(request: dict):
         try:
             r = subprocess.run(
                 ["docker", "run", "--rm", "-v", f"{vault_host}:/app/vault",
-                 "cerebrovirtual-herramientas:latest",
+                 _herramientas_image(),
                  "bash", "/app/scripts/process_raw.sh", f"/app/vault/{rel}"],
                 capture_output=True, text=True, timeout=300
             )
