@@ -13,7 +13,7 @@
     "react-dom": "^18.3.0",
     "react-router-dom": "^6.23.1",
     "@tiptap/react": "^2.11.0",
-    "@tiptap/pm": "^2.11.0",
+    "@tiptap/pm": "^3.31.4",
     "@tiptap/starter-kit": "^2.11.0",
     "@tiptap/extension-table": "^2.11.0",
     "tiptap-markdown": "^0.8.10",
