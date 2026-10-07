@@ -4395,7 +4395,17 @@ async def _omni_ensure_connections(want_local: bool, or_key: str) -> list[str]:
         if r.status_code not in (200, 201):
             errors.append(f"ollama-local: {r.status_code} {r.text[:100]}")
 
-    # v1.6.3: el catálogo de una conexión openrouter nueva llega casi vacío (~24 modelos) y el
+    # v1.6.6: probar la conexión con OpenRouter — una key inválida (typo del wizard) se veía
+    # 'conectada' en el dashboard pero 401 al usarla. Subir el error del upstream al wizard/logs.
+    if or_conn:
+        tt = await _omni_client.post(f"/api/providers/{or_conn['id']}/test", json={})
+        if tt.status_code == 200:
+            td = tt.json() or {}
+            if not td.get("valid"):
+                msg = ((td.get("diagnosis") or {}).get("message")) or td.get("error") or "sin detalle"
+                errors.append(f"openrouter-test: OpenRouter rechazó la API key — {msg}")
+
+    # v1.6.6: el catálogo de una conexión openrouter nueva llega casi vacío (~24 modelos) y el
     # pre-dispatch salta combos cuyos modelos no están en catálogo → sincronizar siempre.
     r = await _omni_client.get("/api/providers")
     if r.status_code == 200:
@@ -4405,19 +4415,34 @@ async def _omni_ensure_connections(want_local: bool, or_key: str) -> list[str]:
         if or_conn:
             await _omni_client.post(f"/api/providers/{or_conn['id']}/sync-models", json={})
 
-    # v1.6.3: OmniRoute nuevo exige client key en /v1 (fail-closed) — crear una y dejarla en
-    # .env; sistema-agente la recoge al crearse/recrearse. En stacks viejos sin /api/keys: no-op.
-    if not _read_env_var("OMNIROUTE_API_KEY").startswith("sk-"):
+    # v1.6.6: OmniRoute nuevo exige client key en /v1 (fail-closed). La key del .env puede estar
+    # STALE (instalación de cero reutilizando carpeta: OmniRoute nuevo, volumen vacío) → VERIFICAR
+    # contra /v1/models y curar (crear + .env + recrear agente). Stacks viejos sin /api/keys: no-op.
+    env_key = _read_env_var("OMNIROUTE_API_KEY")
+    key_ok = False
+    if env_key.startswith("sk-"):
+        t = await _omni_client.get("/v1/models", headers={"Authorization": f"Bearer {env_key}"})
+        key_ok = t.status_code == 200
+    if not key_ok:
         rk = await _omni_client.post("/api/keys", json={"name": "cerebro-hermes"})
         if rk.status_code in (200, 201):
-            kv = (rk.json() or {}).get("key") or ""
-            if kv:
-                _update_env_var("OMNIROUTE_API_KEY", kv)
-                # v1.6.3: el env del sistema-agente se congela al crearlo (antes de esta key) y
-                # generate_config.py usa OMNIROUTE_API_KEY → recrear para que el chat use la client key.
-                # ponytail: solo pasa al escribir una key NUEVA (idempotente), momento del wizard.
-                subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"),
-                               capture_output=True, text=True, timeout=120)
+            env_key = (rk.json() or {}).get("key") or ""
+            if env_key:
+                _update_env_var("OMNIROUTE_API_KEY", env_key)
+
+    # v1.6.6: el env del sistema-agente se congela al CREAR el contenedor (stack-up, antes de la
+    # key) → leer el real y recrear si difiere. Cubre también el recreate fallido silencioso.
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    agent_key = None
+    try:
+        pe = subprocess.run(["docker", "exec", f"{project}-sistema-agente-1", "printenv", "OMNIROUTE_API_KEY"],
+                            capture_output=True, text=True, timeout=15)
+        agent_key = (pe.stdout or "").strip() or None
+    except Exception:
+        pass
+    if env_key and agent_key != env_key:
+        subprocess.run(_compose_cmd("up", "-d", "--force-recreate", "--no-deps", "sistema-agente"),
+                       capture_output=True, text=True, timeout=120)
     return errors
 
 
