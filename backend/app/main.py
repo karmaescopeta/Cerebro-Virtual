@@ -192,6 +192,8 @@ async def set_ia_mode_ep(request: dict):
         if k in request:
             data[k] = bool(request[k])
     save_ia_mode(data)
+    if data.get("localMode"):
+        await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: pasar el wizard a local/both despierta ollama
     return {"success": True, **data}
 
 @app.get("/api/ia/aviso")
@@ -1229,6 +1231,8 @@ async def chat(message: dict):
         local = bool(message.get("local", False)) and bool(ia.get("localMode", False))
     if not user_message:
         raise HTTPException(status_code=400, detail="Mensaje vacío")
+    if local:
+        await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: ollama bajo demanda (parado por inactividad)
 
     config = get_agent_config()
     agent_name = config.get("agentName", "Hermes") if config else "Hermes"
@@ -4084,6 +4088,7 @@ def _gpu_advice(vram_mb: int) -> str:
 async def localai_gpu():
     """v1.6.0: GPU que ve el contenedor de Ollama + tamaño de modelo recomendado (chip en Modelos)."""
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    _touch_local_use()  # v1.6.1: Modelos abierto — el chat y pulls cuentan como uso activo
     try:
         r = subprocess.run(["docker", "exec", f"{project}-ollama-1", "nvidia-smi",
                              "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"],
@@ -4100,9 +4105,63 @@ async def localai_gpu():
     return {"gpu": name, "vram_mb": vram_mb, "vram_free_mb": free_mb, "advice": _gpu_advice(vram_mb)}
 
 
+# v1.6.1: Ollama BAJO DEMANDA — el contenedor solo corre cuando se usa (chat 🔒 o Modelos).
+# Parado consume 0 RAM/CPU/VRAM; docker start tarda ~2s y conserva la GPU (docker start
+# reusa el contenedor YA CREADO con su config de devices). Sin GPU en el equipo: idéntico.
+_LAST_LOCAL_USE = {"at": 0.0}
+_OLLAMA_IDLE_S = 600  # 10 min sin uso local → docker stop
+
+
+def _ollama_container_name() -> str:
+    return f"{os.getenv('COMPOSE_PROJECT_NAME', 'cerebrovirtual')}-ollama-1"
+
+
+def _touch_local_use():
+    _LAST_LOCAL_USE["at"] = time.time()
+
+
+def _ollama_running() -> bool:
+    try:
+        r = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", _ollama_container_name()],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and "true" in r.stdout.strip()
+    except Exception:
+        return False
+
+
+def _ensure_ollama_up():
+    """Arrancar ollama si está parado. Llamar desde TODO punto que lo use (chat local,
+    Modelos, pull, terminal). Toca el reloj de inactividad."""
+    _touch_local_use()
+    if not _ollama_running():
+        try:
+            subprocess.run(["docker", "start", _ollama_container_name()],
+                           capture_output=True, text=True, timeout=60)
+            print("🔵 ollama estaba parado — arrancado bajo demanda")
+        except Exception as e:
+            print(f"⚠️ no pude arrancar ollama bajo demanda: {e}")
+
+
+def _local_idle_watchdog():
+    # ponytail: hilo daemon, 1 docker inspect/min — si 10 min sin uso local, ollama se apaga solo
+    while True:
+        time.sleep(60)
+        try:
+            if time.time() - _LAST_LOCAL_USE["at"] > _OLLAMA_IDLE_S and _ollama_running():
+                subprocess.run(["docker", "stop", _ollama_container_name()],
+                               capture_output=True, text=True, timeout=60)
+                print("⚪ ollama parado por inactividad (10 min sin uso local)")
+        except Exception:
+            pass
+
+
+threading.Thread(target=_local_idle_watchdog, daemon=True).start()
+
+
 @app.get("/api/localai/status")
 async def localai_status():
     """Estado de contenedores ollama + omniroute + modelos instalados."""
+    await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: abrir Modelos despierta ollama (parado por inactividad)
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     out = {"ollama": {"running": False, "models": []}, "omniroute": {"running": False}}
     for key in _OLLAMA_CONTAINERS:
@@ -4149,6 +4208,7 @@ async def localai_model_delete(request: dict):
     model = (request.get("model") or "").strip()
     if not model or not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
         raise HTTPException(status_code=400, detail="model inválido")
+    await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: docker exec necesita el contenedor corriendo
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     r = subprocess.run(["docker", "exec", f"{project}-ollama-1", "ollama", "rm", model],
                        capture_output=True, text=True, timeout=120)
@@ -4438,6 +4498,8 @@ async def ollama_terminal(ws: WebSocket, container: str):
     if container not in _OLLAMA_CONTAINERS:
         await ws.close(code=4004)
         return
+    if container == "ollama":
+        await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: docker exec -i necesita el contenedor corriendo
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
     name = f"{project}-{container}-1"
     await ws.accept()
@@ -4486,6 +4548,7 @@ async def localai_pull(model: str):
     """Pull de modelo Ollama — SSE con progreso en vivo."""
     if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
         raise HTTPException(status_code=400, detail="nombre de modelo inválido")
+    await run_in_threadpool(_ensure_ollama_up)  # v1.6.1: docker exec necesita el contenedor corriendo
     project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
 
     async def _gen():
