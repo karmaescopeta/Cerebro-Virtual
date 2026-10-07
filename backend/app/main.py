@@ -4375,7 +4375,14 @@ async def _omni_ensure_connections(want_local: bool, or_key: str) -> list[str]:
         data = r.json()
         existing = data if isinstance(data, list) else (data.get("connections") or data.get("providers") or [])
     have = {c.get("provider") for c in existing}
-    if "openrouter" not in have and or_key:
+    or_conn = next((c for c in existing if c.get("provider") == "openrouter"), None)
+    if or_conn and or_key:
+        # v1.6.3: la key del wizard SIEMPRE es la key de la conexión openrouter — PATCH
+        # idempotente (bóvedas importadas traen conexión vieja con otra key).
+        r = await _omni_client.patch(f"/api/providers/{or_conn['id']}", json={"apiKey": or_key})
+        if r.status_code not in (200, 201):
+            errors.append(f"openrouter(patch): {r.status_code} {r.text[:100]}")
+    elif "openrouter" not in have and or_key:
         r = await _omni_client.post("/api/providers", json={
             "provider": "openrouter", "apiKey": or_key,
             "name": "OpenRouter principal", "priority": 10})
