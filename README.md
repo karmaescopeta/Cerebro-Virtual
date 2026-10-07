@@ -117,6 +117,8 @@ Una interfaz oscura, estilo Obsidian, con estas pestañas:
 - **Cerebro** — tus documentos organizados en proyectos, con un lector/editor integrado.
 - **Grafo** — Estructura y Neuronas: cómo se conecta todo lo que sabes.
 - **Modelos** — qué IA usa cada parte del sistema, e IA local (Ollama) con descarga de modelos y terminal propia.
+
+> **Con GPU NVIDIA**: el gestor la detecta al Iniciar y Ollama la usa automáticamente (chat local en segundos en vez de minutos). En la pestaña Modelos, junto a "Descargar modelo", verás tu GPU y el tamaño máximo de modelo recomendado para su memoria. Sin GPU, los modelos locales van a CPU — recomendado entonces un modelo pequeño (1-3B).
 - **Actualizaciones** — qué versión hay de cada componente y actualización con un clic.
 - **Ajustes** — configuración, copias de seguridad, túnel de acceso remoto.
 

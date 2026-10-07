@@ -4068,6 +4068,38 @@ def _load_model_labels() -> dict:
         return {}
 
 
+def _gpu_advice(vram_mb: int) -> str:
+    """v1.6.0: tamaño máximo recomendado por VRAM (Q4 ≈ 0.6GB/B + KV cache de 32k).
+    Medido en real: un 9B Q4 con ctx 32k ocupa 7.3GB — justo en una GPU de 8GB."""
+    gb = vram_mb / 1024
+    if gb >= 22: return "hasta 32B (Q4)"
+    if gb >= 15: return "hasta 24B (Q4)"
+    if gb >= 11: return "hasta 14B (Q4)"
+    if gb >= 7: return "hasta 9B (Q4)"
+    if gb >= 5: return "hasta 7B (Q4)"
+    return "de 3 a 4B (Q4)"
+
+
+@app.get("/api/localai/gpu")
+async def localai_gpu():
+    """v1.6.0: GPU que ve el contenedor de Ollama + tamaño de modelo recomendado (chip en Modelos)."""
+    project = os.getenv("COMPOSE_PROJECT_NAME", "cerebrovirtual")
+    try:
+        r = subprocess.run(["docker", "exec", f"{project}-ollama-1", "nvidia-smi",
+                             "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader"],
+                            capture_output=True, text=True, timeout=15)
+    except Exception:
+        r = None
+    line = ((r.stdout or "").strip().splitlines() or [""])[0] if r else ""
+    if not r or r.returncode != 0 or "," not in line:
+        return {"gpu": None,
+                "advice": "Sin GPU detectada — los modelos locales irán a CPU (respuestas de varios minutos). Recomendado: modelos pequeños, de 1 a 3 mil millones de parámetros."}
+    name, total, free = [p.strip() for p in line.split(",")]
+    vram_mb = int(re.sub(r"[^0-9]", "", total) or 0)
+    free_mb = int(re.sub(r"[^0-9]", "", free) or 0)
+    return {"gpu": name, "vram_mb": vram_mb, "vram_free_mb": free_mb, "advice": _gpu_advice(vram_mb)}
+
+
 @app.get("/api/localai/status")
 async def localai_status():
     """Estado de contenedores ollama + omniroute + modelos instalados."""

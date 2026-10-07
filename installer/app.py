@@ -4,7 +4,7 @@ import http.server, io, json, os, re, shutil, subprocess, sys, threading, time, 
 from pathlib import Path
 
 REPO_ZIP_URL = "https://codeload.github.com/karmaescopeta/Cerebro-Virtual/zip/refs/heads/main"
-GESTOR_VERSION = "1.5.5"
+GESTOR_VERSION = "1.6.0"
 RELEASES_API = "https://api.github.com/repos/karmaescopeta/Cerebro-Virtual/releases/latest"
 
 IS_WIN = os.name == "nt"
@@ -1015,6 +1015,57 @@ def move_docker_data(dest_str=""):
     return {"success": True}
 
 
+# v1.6.0: GPU — override de compose que da a Ollama las GPUs del host. Sin GPU → sin
+# archivo (un -f con devices nvidia rompería el 'up' en equipos sin driver).
+_GPU_OVERRIDE_YML = """# Override generado por el Gestor: se detectó GPU NVIDIA en el host.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+"""
+_GPU = {"at": 0.0, "data": None}
+
+
+def _gpu_probe():
+    """v1.6.0: GPU NVIDIA del host (cache 1h) → (nombre, vram_mb) o None."""
+    if time.time() - _GPU["at"] < 3600:
+        return _GPU["data"]
+    data = None
+    rc, out, _ = run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"], timeout=10)
+    if rc == 0 and out.strip():
+        parts = out.strip().splitlines()[0].split(",")
+        if len(parts) == 2:
+            name = parts[0].strip()
+            mb = int(re.sub(r"[^0-9]", "", parts[1]) or 0)
+            if name and mb:
+                data = (name, mb)
+    _GPU.update(at=time.time(), data=data)
+    return data
+
+
+def _gpu_override_file():
+    return COMPOSE_FILE.parent / "docker-compose.gpu.yml"
+
+
+def _ensure_gpu_override():
+    """v1.6.0: escribir/borrar el override GPU según el host. Devuelve mensaje para el log o None.
+    update_system reemplaza imagen_Sistema_Base (se lleva el override) — instance_start lo regenera."""
+    gpu = _gpu_probe()
+    f = _gpu_override_file()
+    if gpu and not f.exists():
+        f.write_text(_GPU_OVERRIDE_YML, encoding="utf-8")
+        return f"GPU detectada: {gpu[0]} ({gpu[1] // 1024} GB) — Ollama la usará para los modelos locales."
+    if not gpu and f.exists():
+        f.unlink(missing_ok=True)
+        return "Sin GPU NVIDIA — los modelos locales irán en CPU (lento, respuestas de minutos)."
+    return None
+
+
 def compose_cmd(name, *args):
     vals = read_env(name)
     project = proj_name(vals.get("COMPOSE_PROJECT_NAME", name))  # v1.4.1: docker pide minúsculas
@@ -1029,8 +1080,11 @@ def compose_cmd(name, *args):
     if not vals.get("OMNIROUTE_PORT"): full_env["OMNIROUTE_PORT"] = "20129"
     token = vals.get("CLOUDFLARE_TUNNEL_TOKEN", "")
     profile = ["--profile", "tunnel"] if token else []
-    cmd = ["docker", "compose", "-p", project, "-f", str(COMPOSE_FILE),
-           "--env-file", str(INSTANCES_DIR / name / ".env")] + profile + list(args)
+    cmd = ["docker", "compose", "-p", project]
+    gpu_override = _gpu_override_file()
+    if gpu_override.exists():  # v1.6.0: GPU del host para Ollama (creado/borrado por _ensure_gpu_override)
+        cmd += ["-f", str(gpu_override)]
+    cmd += ["-f", str(COMPOSE_FILE), "--env-file", str(INSTANCES_DIR / name / ".env")] + profile + list(args)
     return cmd, full_env
 
 
@@ -1227,6 +1281,13 @@ def instance_start(name):
         _ensure_ports(name, lambda s: _log_append(buf, s))
     except Exception as e:
         _log_append(buf, f"(no pude comprobar los puertos: {e})")
+    try:
+        # v1.6.0: GPU del host → override para Ollama (regenerado tras cada update del sistema)
+        msg = _ensure_gpu_override()
+        if msg:
+            _log_append(buf, msg)
+    except Exception as e:
+        _log_append(buf, f"(no pude comprobar la GPU: {e})")
     # v1.5 (U17): --progress=plain desoculta los pasos de build — SOLO si el compose lo admite
     args = ["up", "-d", "--build"] + (["--progress=plain"] if _compose_progress_ok() else [])
     cmd, env = compose_cmd(name, *args)
