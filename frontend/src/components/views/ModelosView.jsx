@@ -295,11 +295,10 @@ function LocalAISection({ profiles, saveLocalAssignments }) {
       const res = await fetch('/api/localai/provision', { method: 'POST' })
       const data = await res.json()
       if (res.ok && data.success) {
-        const c = (data.created || []).map(x => `${x.provider} (${x.status})`).join(', ')
-        setProvMsg(c ? 'Creadas: ' + c : 'Proveedores ya configurados')
+        setProvMsg('Conexiones listas (openrouter + ollama local)')
         await loadConns()
       } else {
-        setProvMsg('Error: ' + (data.detail || 'fallo'))
+        setProvMsg('Error: ' + (data.detail || (data.errors || []).join(', ') || 'fallo'))
       }
     } catch { setProvMsg('Error de conexión') }
     setProvisioning(false)
